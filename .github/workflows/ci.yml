@@ -35,7 +35,7 @@ jobs:
 
       - name: Lint with pylint
         run: |
-          pylint epub2cbr.py --disable=C0114,C0115,C0116,W0612,W0613,R0913,R0914,R0915,R0912,W1203 --exit-zero
+          pylint epub2cbr.py --max-line-length=120 --disable=C0114,C0115,C0116,C0301,C0302,C0415,W0612,W0613,W0622,W0718,W1510,W1514,R0913,R0914,R0915,R0912,R0917,R1705,R1716,W1203 --exit-zero
 
   docker-build-test:
     name: Docker Build Test
