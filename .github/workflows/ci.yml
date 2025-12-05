@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
   lint:
     name: Lint & Syntax Check
@@ -30,28 +34,52 @@ jobs:
         run: |
           # Stop the build if there are Python syntax errors or undefined names
           flake8 epub2cbr.py --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Exit-zero treats all errors as warnings
-          flake8 epub2cbr.py --count --exit-zero --max-complexity=15 --max-line-length=120 --statistics
+          # Exit-zero treats all errors as warnings (max-complexity raised for conversion functions)
+          flake8 epub2cbr.py --count --exit-zero --max-complexity=35 --max-line-length=120 --statistics
 
       - name: Lint with pylint
         run: |
-          pylint epub2cbr.py --disable=C0114,C0115,C0116,W0612,W0613,R0913,R0914,R0915,R0912,W1203 --exit-zero
+          pylint epub2cbr.py --max-line-length=120 --disable=C0114,C0115,C0116,C0301,C0302,C0415,W0612,W0613,W0622,W0718,W1510,W1514,R0913,R0914,R0915,R0912,R0917,R1705,R1716,W1203 --exit-zero
 
   docker-build-test:
-    name: Docker Build Test
+    name: Docker Build & Test
     runs-on: ubuntu-latest
+    needs: lint
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image (test)
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract branch name
+        id: branch
+        run: |
+          BRANCH_NAME="${{ github.head_ref }}"
+          # Sanitize branch name for Docker tag
+          BRANCH_TAG=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
+          echo "tag=$BRANCH_TAG" >> $GITHUB_OUTPUT
+
+      - name: Build and load for testing (amd64 only)
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64
           push: false
+          load: true
           tags: epub2cbr:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -60,3 +88,15 @@ jobs:
         run: |
           docker run --rm epub2cbr:test --help
           echo "✅ Docker image built and tested successfully"
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.branch.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

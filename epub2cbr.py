@@ -402,6 +402,12 @@ def make_http_handler(directory: Path):
     """Create an HTTP handler that serves files from a specific directory."""
 
     class DirectoryHTTPHandler(http.server.SimpleHTTPRequestHandler):
+        # Add MIME type for .xhtml files - Chrome needs text/html to render properly
+        extensions_map = {
+            **http.server.SimpleHTTPRequestHandler.extensions_map,
+            ".xhtml": "text/html",
+        }
+
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(directory), **kwargs)
 
@@ -522,6 +528,11 @@ def capture_with_gowitness(
         if f.is_file():
             f.unlink()
 
+    # Check for custom Chrome path (e.g., in Docker)
+    import os
+
+    chrome_path = os.environ.get("CHROME_PATH", "")
+
     cmd = [
         "gowitness",
         "scan",
@@ -544,6 +555,9 @@ def capture_with_gowitness(
         "--write-none",
         "-q",
     ]
+
+    if chrome_path:
+        cmd.extend(["--chrome-path", chrome_path])
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
@@ -612,6 +626,11 @@ def capture_batch_with_gowitness(
             f.write(f"{url}\n")
             url_to_output[url] = output_path
 
+    # Check for custom Chrome path (e.g., in Docker)
+    import os
+
+    chrome_path = os.environ.get("CHROME_PATH", "")
+
     # Run gowitness scan file
     cmd = [
         "gowitness",
@@ -638,6 +657,9 @@ def capture_batch_with_gowitness(
         str(threads),
         "-q",
     ]
+
+    if chrome_path:
+        cmd.extend(["--chrome-path", chrome_path])
 
     try:
         # Calculate total timeout based on number of URLs
@@ -1023,10 +1045,22 @@ def convert_epub(
                         if capture_with_gowitness(url, output_path, render_width, render_height, timeout, delay):
                             success_count += 1
 
+                # Final check for failed pages
+                final_missing = [(url, path) for url, path in urls_with_paths if not path.exists()]
+                if final_missing:
+                    print(f"\n⚠️  WARNING: {len(final_missing)} pages failed to capture:")
+                    for url, path in final_missing:
+                        page_name = url.split("/")[-1]
+                        print(f"   - {page_name}")
+
             finally:
                 server.shutdown()
 
         print(f"✅ Successfully processed {success_count}/{total} pages")
+
+        # Warn if there are missing pages
+        if success_count < total:
+            print(f"⚠️  {total - success_count} pages are missing from the output!")
 
         # Keep extracted files if requested
         if keep_extracted:

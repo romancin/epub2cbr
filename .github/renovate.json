@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:enableMajor",
+    ":semanticCommits"
+  ],
+  "labels": ["dependencies"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "Europe/Madrid",
+  "packageRules": [
+    {
+      "matchManagers": ["dockerfile"],
+      "groupName": "Docker images",
+      "automerge": false
+    },
+    {
+      "matchManagers": ["pip_requirements"],
+      "groupName": "Python dependencies",
+      "automerge": false
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "matchManagers": ["pre-commit"],
+      "groupName": "pre-commit hooks",
+      "automerge": true,
+      "automergeType": "pr"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  }
+}

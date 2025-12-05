@@ -1,12 +1,4 @@
 # epub2cbr - EPUB to CBR/CBZ Converter
-# Multi-stage build for smaller final image
-
-FROM golang:1.23-alpine AS gowitness-builder
-
-# Install gowitness v3.0.6 - use GOTOOLCHAIN=auto to allow downloading newer Go if needed
-# hadolint ignore=DL3059
-RUN GOTOOLCHAIN=auto go install github.com/sensepost/gowitness@v3.0.6
-
 
 FROM python:3.11-slim
 
@@ -19,8 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Chrome/Chromium for gowitness
     chromium \
     chromium-driver \
-    # For downloading RAR
+    # For downloading binaries
     wget \
+    ca-certificates \
     # ZIP for CBZ creation (universal fallback)
     zip \
     # Fonts for proper text rendering
@@ -29,11 +22,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# Download gowitness pre-compiled binary (much faster than compiling)
+ENV GOWITNESS_VERSION=3.1.1
+RUN set -ex && \
+    ARCH=$(dpkg --print-architecture) && \
+    echo "Architecture: $ARCH" && \
+    if [ "$ARCH" = "amd64" ]; then \
+        GOWITNESS_ARCH="linux-amd64"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        GOWITNESS_ARCH="linux-arm64"; \
+    else \
+        GOWITNESS_ARCH="linux-arm"; \
+    fi && \
+    wget -q "https://github.com/sensepost/gowitness/releases/download/${GOWITNESS_VERSION}/gowitness-${GOWITNESS_VERSION}-${GOWITNESS_ARCH}" \
+        -O /usr/local/bin/gowitness && \
+    chmod +x /usr/local/bin/gowitness
+
 # Download and install RAR from rarlab (x64 only - no ARM Linux version available)
 # On ARM, we'll use ZIP/CBZ format instead
 RUN set -ex && \
     ARCH=$(dpkg --print-architecture) && \
-    echo "Architecture: $ARCH" && \
     if [ "$ARCH" = "amd64" ]; then \
         wget -q "https://www.rarlab.com/rar/rarlinux-x64-712.tar.gz" -O /tmp/rar.tar.gz && \
         tar -xzf /tmp/rar.tar.gz -C /tmp && \
@@ -43,9 +51,6 @@ RUN set -ex && \
     else \
         echo "RAR not available for $ARCH, will use ZIP/CBZ format"; \
     fi
-
-# Copy gowitness from builder
-COPY --from=gowitness-builder /go/bin/gowitness /usr/local/bin/gowitness
 
 # Set Chrome path for gowitness
 ENV CHROME_PATH=/usr/bin/chromium
