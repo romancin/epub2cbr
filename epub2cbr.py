@@ -402,6 +402,12 @@ def make_http_handler(directory: Path):
     """Create an HTTP handler that serves files from a specific directory."""
 
     class DirectoryHTTPHandler(http.server.SimpleHTTPRequestHandler):
+        # Add MIME type for .xhtml files - Chrome needs text/html to render properly
+        extensions_map = {
+            **http.server.SimpleHTTPRequestHandler.extensions_map,
+            ".xhtml": "text/html",
+        }
+
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(directory), **kwargs)
 
