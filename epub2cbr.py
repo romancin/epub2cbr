@@ -1039,10 +1039,22 @@ def convert_epub(
                         if capture_with_gowitness(url, output_path, render_width, render_height, timeout, delay):
                             success_count += 1
 
+                # Final check for failed pages
+                final_missing = [(url, path) for url, path in urls_with_paths if not path.exists()]
+                if final_missing:
+                    print(f"\n⚠️  WARNING: {len(final_missing)} pages failed to capture:")
+                    for url, path in final_missing:
+                        page_name = url.split("/")[-1]
+                        print(f"   - {page_name}")
+
             finally:
                 server.shutdown()
 
         print(f"✅ Successfully processed {success_count}/{total} pages")
+
+        # Warn if there are missing pages
+        if success_count < total:
+            print(f"⚠️  {total - success_count} pages are missing from the output!")
 
         # Keep extracted files if requested
         if keep_extracted:
