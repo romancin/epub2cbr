@@ -73,21 +73,30 @@ jobs:
           BRANCH_TAG=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9._-]/-/g' | tr '[:upper:]' '[:lower:]')
           echo "tag=$BRANCH_TAG" >> $GITHUB_OUTPUT
 
-      - name: Build and push dev image
+      - name: Build and load for testing (amd64 only)
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          load: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.branch.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: epub2cbr:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Test Docker image
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.branch.outputs.tag }}
-          docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.branch.outputs.tag }} --help
-          echo "✅ Docker image built, pushed and tested successfully"
+          docker run --rm epub2cbr:test --help
+          echo "✅ Docker image built and tested successfully"
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.branch.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
