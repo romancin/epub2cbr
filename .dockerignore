@@ -1,0 +1,42 @@
+# Docker ignore file for epub2cbr
+
+# Git
+.git
+.gitignore
+
+# Test files
+test/
+*.epub
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+*.tmp
+mise.toml
+LICENSE
+README.md

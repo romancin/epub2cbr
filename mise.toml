@@ -1,0 +1,39 @@
+[tools]
+python = "3.12"
+go = "1.25"
+pre-commit = "latest"
+
+[tasks.setup]
+description = "Install all dependencies and setup pre-commit hooks"
+run = """
+pip install -r requirements.txt
+eval "$(mise env)" && go install github.com/sensepost/gowitness@latest
+pre-commit install
+echo "✅ Python, Go dependencies and pre-commit hooks installed"
+"""
+
+[tasks.setup-rar]
+description = "Install rar (requires Homebrew on macOS or apt on Linux)"
+run = """
+if command -v rar &> /dev/null; then
+    echo "✅ rar is already installed"
+elif command -v brew &> /dev/null; then
+    echo "Installing rar via Homebrew..."
+    brew install rar
+elif command -v apt &> /dev/null; then
+    echo "Installing rar via apt..."
+    sudo apt install -y rar
+else
+    echo "❌ Could not install rar. Please install manually."
+    exit 1
+fi
+"""
+
+[tasks.setup-all]
+description = "Install all dependencies including rar"
+depends = ["setup", "setup-rar"]
+run = "echo '✅ All dependencies installed'"
+
+[tasks.check]
+description = "Check all dependencies"
+run = "./epub2cbr.py --check-deps"
