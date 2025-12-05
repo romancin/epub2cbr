@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+## [v0.0.1] - 2025-12-05
+
+### Changed
+- feat: Prepare for first release (#1) (477dc46)
+- feat: Add epub2cbr tool for converting EPUB comic/manga files to CBR (9198834)
+
+
 - Initial release of epub2cbr converter
 - Support for three EPUB types:
   - Text embedded in images → Direct extraction (best quality)
@@ -33,4 +40,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--threads` - Parallel screenshot processing
 - `--timeout` / `--delay` - Screenshot timing control
 
-[Unreleased]: https://github.com/romancin/epub2cbr/commits/main
+[Unreleased]: https://github.com/romancin/epub2cbr/compare/v0.0.1...HEAD
+[v0.0.1]: https://github.com/romancin/epub2cbr/releases/tag/v0.0.1
