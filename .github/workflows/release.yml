@@ -40,8 +40,28 @@ jobs:
           MINOR=$(echo $VERSION | cut -d. -f2)
           PATCH=$(echo $VERSION | cut -d. -f3)
 
-          # Increment patch version
-          PATCH=$((PATCH + 1))
+          # Get commits since last tag to determine version bump type
+          if [ "$LATEST_TAG" != "v0.0.0" ]; then
+            COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s" --no-merges)
+          else
+            COMMITS=$(git log --pretty=format:"%s" --no-merges -50)
+          fi
+
+          # Check for version bump markers in commit messages
+          if echo "$COMMITS" | grep -q "\[MAJOR\]"; then
+            echo "Found [MAJOR] marker - bumping major version"
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS" | grep -q "\[MINOR\]"; then
+            echo "Found [MINOR] marker - bumping minor version"
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            echo "No version marker found - bumping patch version"
+            PATCH=$((PATCH + 1))
+          fi
+
           NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
 
           echo "New tag: $NEW_TAG"
