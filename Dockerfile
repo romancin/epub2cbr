@@ -7,9 +7,9 @@ FROM golang:1.23-alpine AS gowitness-builder
 # hadolint ignore=DL3018
 RUN apk add --no-cache git
 
-# Install gowitness v3.0.6 - use GOTOOLCHAIN=auto to allow downloading newer Go if needed
+# Install gowitness 3.1.1 - use GOTOOLCHAIN=auto to allow downloading newer Go if needed
 # hadolint ignore=DL3059
-RUN GOTOOLCHAIN=auto go install github.com/sensepost/gowitness@v3.0.6
+RUN GOTOOLCHAIN=auto go install github.com/sensepost/gowitness/v3@v3.1.1
 
 
 FROM python:3.11-slim
