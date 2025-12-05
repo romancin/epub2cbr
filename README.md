@@ -1,6 +1,8 @@
 # epub2cbr
 
 [![CI](https://github.com/romancin/epub2cbr/actions/workflows/ci.yml/badge.svg)](https://github.com/romancin/epub2cbr/actions/workflows/ci.yml)
+[![Release](https://github.com/romancin/epub2cbr/actions/workflows/release.yml/badge.svg)](https://github.com/romancin/epub2cbr/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/romancin/epub2cbr)](https://github.com/romancin/epub2cbr/releases)
 
 Convert EPUB comic/manga files to CBR (Comic Book RAR) archives.
 
@@ -15,7 +17,7 @@ Convert EPUB comic/manga files to CBR (Comic Book RAR) archives.
 
 ```bash
 # Using Docker (recommended - no dependencies needed)
-docker run --rm -v $(pwd):/data romancin/epub2cbr comic.epub --cbr-only
+docker run --rm -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest comic.epub --cbr-only
 
 # Or install locally with mise
 mise install && mise run setup-all
@@ -29,14 +31,18 @@ mise install && mise run setup-all
 No dependencies needed - everything is included in the container.
 
 ```bash
-# Build the image
-docker build -t epub2cbr .
+# Pull the image from GitHub Container Registry
+docker pull ghcr.io/romancin/epub2cbr:latest
 
 # Convert a single file
-docker run --rm -v $(pwd):/data epub2cbr manga.epub --cbr-only
+docker run --rm -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest manga.epub --cbr-only
 
 # Batch conversion
-for f in *.epub; do docker run --rm -v $(pwd):/data epub2cbr "$f" --cbr-only; done
+for f in *.epub; do docker run --rm -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest "$f" --cbr-only; done
+
+# Or build locally
+docker build -t epub2cbr .
+docker run --rm -v $(pwd):/data epub2cbr manga.epub --cbr-only
 ```
 
 ### Using mise
