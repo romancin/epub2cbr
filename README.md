@@ -35,14 +35,14 @@ No dependencies needed - everything is included in the container.
 docker pull ghcr.io/romancin/epub2cbr:latest
 
 # Convert a single file
-docker run --rm -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest manga.epub --cbr-only
+docker run --rm  -it -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest manga.epub --cbr-only
 
 # Batch conversion
-for f in *.epub; do docker run --rm -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest "$f" --cbr-only; done
+for f in *.epub; do docker run --rm -it -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest "$f" --cbr-only; done
 
 # Or build locally
 docker build -t epub2cbr .
-docker run --rm -v $(pwd):/data epub2cbr manga.epub --cbr-only
+docker run --rm -it -v $(pwd):/data epub2cbr manga.epub --cbr-only
 ```
 
 ### Using mise
