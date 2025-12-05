@@ -30,8 +30,8 @@ jobs:
         run: |
           # Stop the build if there are Python syntax errors or undefined names
           flake8 epub2cbr.py --count --select=E9,F63,F7,F82 --show-source --statistics
-          # Exit-zero treats all errors as warnings
-          flake8 epub2cbr.py --count --exit-zero --max-complexity=15 --max-line-length=120 --statistics
+          # Exit-zero treats all errors as warnings (max-complexity raised for conversion functions)
+          flake8 epub2cbr.py --count --exit-zero --max-complexity=35 --max-line-length=120 --statistics
 
       - name: Lint with pylint
         run: |
