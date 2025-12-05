@@ -522,6 +522,11 @@ def capture_with_gowitness(
         if f.is_file():
             f.unlink()
 
+    # Check for custom Chrome path (e.g., in Docker)
+    import os
+
+    chrome_path = os.environ.get("CHROME_PATH", "")
+
     cmd = [
         "gowitness",
         "scan",
@@ -544,6 +549,9 @@ def capture_with_gowitness(
         "--write-none",
         "-q",
     ]
+
+    if chrome_path:
+        cmd.extend(["--chrome-path", chrome_path])
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
@@ -612,6 +620,11 @@ def capture_batch_with_gowitness(
             f.write(f"{url}\n")
             url_to_output[url] = output_path
 
+    # Check for custom Chrome path (e.g., in Docker)
+    import os
+
+    chrome_path = os.environ.get("CHROME_PATH", "")
+
     # Run gowitness scan file
     cmd = [
         "gowitness",
@@ -638,6 +651,9 @@ def capture_batch_with_gowitness(
         str(threads),
         "-q",
     ]
+
+    if chrome_path:
+        cmd.extend(["--chrome-path", chrome_path])
 
     try:
         # Calculate total timeout based on number of URLs
