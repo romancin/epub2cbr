@@ -759,7 +759,7 @@ def capture_batch_with_gowitness(
 # =============================================================================
 
 
-def autocrop_image(img: "Image.Image", tolerance: int = 10) -> "Image.Image":
+def autocrop_image(img: "Image.Image", tolerance: int = 20) -> "Image.Image":
     """
     Remove white/near-white borders from an image.
 
@@ -794,18 +794,18 @@ def autocrop_image(img: "Image.Image", tolerance: int = 10) -> "Image.Image":
     rmin, rmax = np.where(rows)[0][[0, -1]]
     cmin, cmax = np.where(cols)[0][[0, -1]]
 
-    # Add small padding (2px) to avoid cutting content
-    padding = 2
+    # Add small padding (1px) to avoid cutting content
+    padding = 1
     rmin = max(0, rmin - padding)
     rmax = min(arr.shape[0] - 1, rmax + padding)
     cmin = max(0, cmin - padding)
     cmax = min(arr.shape[1] - 1, cmax + padding)
 
-    # Only crop if we're removing significant whitespace (>5% of image)
-    original_area = img.width * img.height
-    cropped_area = (cmax - cmin + 1) * (rmax - rmin + 1)
+    # Crop if we're removing any whitespace (no minimum threshold)
+    cropped_width = cmax - cmin + 1
+    cropped_height = rmax - rmin + 1
 
-    if cropped_area < original_area * 0.95:
+    if cropped_width < img.width or cropped_height < img.height:
         return img.crop((cmin, rmin, cmax + 1, rmax + 1))
 
     return img
