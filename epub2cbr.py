@@ -882,7 +882,7 @@ def convert_epub(
     delay: int = 1,
     keep_extracted: bool = False,
     threads: int = 4,
-) -> Tuple[Path, str]:
+) -> Tuple[Path, str, int, int]:
     """
     Main conversion function.
 
@@ -896,7 +896,7 @@ def convert_epub(
         threads: Number of parallel threads for screenshot mode
 
     Returns:
-        Tuple of (screenshots_dir, epub_type)
+        Tuple of (screenshots_dir, epub_type, success_count, total_pages)
     """
     epub_path = Path(epub_path).resolve()
 
@@ -1076,7 +1076,7 @@ def convert_epub(
             shutil.rmtree(temp_gowitness)
 
     print(f"📸 Images saved to: {screenshots_dir}")
-    return screenshots_dir, epub_type
+    return screenshots_dir, epub_type, success_count, total
 
 
 # =============================================================================
@@ -1136,7 +1136,7 @@ Examples:
     start_time = time.time()
 
     try:
-        screenshots_dir, epub_type = convert_epub(
+        screenshots_dir, epub_type, success_count, total_pages = convert_epub(
             epub_path=args.epub,
             output_dir=args.output,
             mode=args.mode,
@@ -1146,13 +1146,24 @@ Examples:
             threads=args.threads,
         )
 
+        # Determine if conversion is complete or incomplete
+        is_complete = success_count == total_pages
+
         # Create CBR if requested
         if args.cbr or args.cbr_only:
             # Create 'converted' directory next to the EPUB file (use absolute path)
             converted_dir = args.epub.resolve().parent / "converted"
             converted_dir.mkdir(parents=True, exist_ok=True)
 
-            cbr_path = converted_dir / f"{args.epub.stem}.cbr"
+            # Incomplete conversions go to 'review' subfolder
+            if not is_complete:
+                output_subdir = converted_dir / "review"
+                output_subdir.mkdir(parents=True, exist_ok=True)
+                print(f"⚠️  Incomplete conversion ({success_count}/{total_pages}) → review folder")
+            else:
+                output_subdir = converted_dir
+
+            cbr_path = output_subdir / f"{args.epub.stem}.cbr"
             jpeg_quality = 0 if args.no_jpeg else args.jpeg_quality
             if create_cbr(screenshots_dir, cbr_path, jpeg_quality, epub_type):
                 # Delete the entire _images directory after creating CBR
@@ -1160,6 +1171,19 @@ Examples:
                 if images_dir.exists():
                     shutil.rmtree(images_dir)
                     print("🗑️  Deleted working directory")
+
+            # Log incomplete conversions to error log
+            if not is_complete:
+                log_file = converted_dir / "conversion_errors.log"
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                log_entry = (
+                    f"[{timestamp}] {args.epub.name}: "
+                    f"{success_count}/{total_pages} pages converted "
+                    f"({total_pages - success_count} missing)\n"
+                )
+                with open(log_file, "a") as f:
+                    f.write(log_entry)
+                print(f"📝 Error logged to: {log_file}")
 
         elapsed = time.time() - start_time
         minutes, seconds = divmod(int(elapsed), 60)
