@@ -272,18 +272,45 @@ def analyze_html_page(html_path: Path) -> dict:
             has_letters = bool(re.search(r"[a-zA-ZáéíóúñÁÉÍÓÚÑàèìòùäëïöüâêîôûçœæ]", text_without_numbers))
             result["has_text_content"] = has_letters
 
+        # Also check for text in span elements outside TextContainer (InDesign exports)
+        # These have positioned text using transform/scale CSS
+        if not result["has_text_content"]:
+            # Look for span elements with id like _idTextSpan
+            span_text_match = re.findall(r'<span[^>]+id=["\']_idTextSpan\d*["\'][^>]*>([^<]+)</span>', content)
+            if span_text_match:
+                all_span_text = "".join(span_text_match).strip()
+                text_without_numbers = re.sub(r"\d+", "", all_span_text).strip()
+                has_letters = bool(re.search(r"[a-zA-ZáéíóúñÁÉÍÓÚÑàèìòùäëïöüâêîôûçœæ]", text_without_numbers))
+                result["has_text_content"] = has_letters
+
+        # Check if images are too small (sprites) - they need screenshot mode
+        # If average image is much smaller than viewport, it's likely sprites
+        if result["image_paths"] and result["viewport"][0] > 0 and Image:
+            try:
+                total_area = 0
+                viewport_area = result["viewport"][0] * result["viewport"][1]
+                for img_path in result["image_paths"][:5]:
+                    with Image.open(img_path) as img:
+                        total_area += img.width * img.height
+                avg_area = total_area / min(len(result["image_paths"]), 5)
+                # If average image area is less than 10% of viewport, they're sprites
+                if avg_area < viewport_area * 0.1:
+                    result["has_text_content"] = True  # Force screenshot mode
+            except Exception:
+                pass
+
     except Exception as e:
         print(f"⚠️  Warning: Error analyzing {html_path.name}: {e}")
 
     return result
 
 
-def determine_epub_type(html_files: List[Path], sample_size: int = 5) -> Tuple[str, int, int, float]:
+def determine_epub_type(html_files: List[Path], sample_size: int = 5) -> Tuple[str, int, int, float, bool]:
     """
     Analyze sample pages to determine EPUB type.
 
     Returns:
-        (epub_type, width, height, scale_factor)
+        (epub_type, width, height, scale_factor, needs_autocrop)
 
     epub_type:
         'extract': Text is embedded in images -> extract directly (best quality)
@@ -296,6 +323,10 @@ def determine_epub_type(html_files: List[Path], sample_size: int = 5) -> Tuple[s
     scale_factor:
         - Ratio between actual image resolution and viewport
         - Used to render screenshots at full resolution
+
+    needs_autocrop:
+        - True if viewport is larger than actual image content
+        - Used to remove white borders from screenshots
     """
     pages_with_text = 0  # Pages where TextContainer has real text
     pages_without_text = 0  # Pages where text is embedded in image
@@ -327,12 +358,20 @@ def determine_epub_type(html_files: List[Path], sample_size: int = 5) -> Tuple[s
         elif scale_factor > 4.0:
             scale_factor = 4.0
 
+    # Check if viewport is larger than image content (needs autocrop)
+    # This happens when images don't fill the entire viewport
+    needs_autocrop = False
+    if max_viewport[0] > 0 and max_image_res[0] > 0:
+        # If image is significantly smaller than viewport (< 95%), enable autocrop
+        if max_image_res[0] < max_viewport[0] * 0.95 or max_image_res[1] < max_viewport[1] * 0.95:
+            needs_autocrop = True
+
     # If ANY page has text in HTML, we need screenshot mode
     # because text won't appear if we just extract images
     if pages_with_text > 0:
-        return "screenshot", max_viewport[0], max_viewport[1], scale_factor
+        return "screenshot", max_viewport[0], max_viewport[1], scale_factor, needs_autocrop
     else:
-        return "extract", max_viewport[0], max_viewport[1], scale_factor
+        return "extract", max_viewport[0], max_viewport[1], scale_factor, needs_autocrop
 
 
 # =============================================================================
@@ -720,7 +759,59 @@ def capture_batch_with_gowitness(
 # =============================================================================
 
 
-def convert_to_jpeg(screenshots_dir: Path, quality: int = 92) -> int:
+def autocrop_image(img: "Image.Image", tolerance: int = 20) -> "Image.Image":
+    """
+    Remove white/near-white borders from an image.
+
+    Args:
+        img: PIL Image object
+        tolerance: How close to white (255) to consider as border (0-255)
+
+    Returns:
+        Cropped image
+    """
+    import numpy as np
+
+    # Convert to RGB if needed
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    # Convert to numpy array
+    arr = np.array(img)
+
+    # Find non-white pixels (where any channel is below 255-tolerance)
+    threshold = 255 - tolerance
+    non_white = np.any(arr < threshold, axis=2)
+
+    # Find bounding box of non-white content
+    rows = np.any(non_white, axis=1)
+    cols = np.any(non_white, axis=0)
+
+    if not rows.any() or not cols.any():
+        # Image is entirely white/near-white, return as-is
+        return img
+
+    rmin, rmax = np.where(rows)[0][[0, -1]]
+    cmin, cmax = np.where(cols)[0][[0, -1]]
+
+    # Add small padding (1px) to avoid cutting content
+    padding = 1
+    rmin = max(0, rmin - padding)
+    rmax = min(arr.shape[0] - 1, rmax + padding)
+    cmin = max(0, cmin - padding)
+    cmax = min(arr.shape[1] - 1, cmax + padding)
+
+    # Crop if we're removing any whitespace (no minimum threshold)
+    cropped_width = cmax - cmin + 1
+    cropped_height = rmax - rmin + 1
+
+    if cropped_width < img.width or cropped_height < img.height:
+        return img.crop((cmin, rmin, cmax + 1, rmax + 1))
+
+    return img
+
+
+def convert_to_jpeg(screenshots_dir: Path, quality: int = 92, autocrop: bool = True) -> int:
     """Convert PNG screenshots to JPEG for smaller file size."""
     if Image is None:
         return 0
@@ -737,6 +828,13 @@ def convert_to_jpeg(screenshots_dir: Path, quality: int = 92) -> int:
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
 
+                # Auto-crop white borders if enabled
+                if autocrop:
+                    try:
+                        img = autocrop_image(img)
+                    except ImportError:
+                        pass  # numpy not available, skip autocrop
+
                 jpg_path = png_path.with_suffix(".jpg")
                 img.save(jpg_path, "JPEG", quality=quality, optimize=True)
 
@@ -745,6 +843,8 @@ def convert_to_jpeg(screenshots_dir: Path, quality: int = 92) -> int:
                 converted += 1
         except Exception as e:
             print(f"\n⚠️  Error converting {png_path.name}: {e}")
+
+    return converted
 
     return converted
 
@@ -799,12 +899,19 @@ def create_cbz(screenshots_dir: Path, output_path: Path) -> bool:
         return False
 
 
-def create_cbr(screenshots_dir: Path, output_path: Path, jpeg_quality: int = 92, epub_type: str = "screenshot") -> bool:
+def create_cbr(
+    screenshots_dir: Path,
+    output_path: Path,
+    jpeg_quality: int = 92,
+    epub_type: str = "screenshot",
+    autocrop: bool = False,
+) -> bool:
     """Create CBR (RAR) or CBZ (ZIP) file from images.
 
     Args:
         jpeg_quality: JPEG quality (1-100). Set to 0 to keep PNG format.
         epub_type: Type of EPUB conversion ('extract' or 'screenshot'). Only converts to JPEG for 'screenshot'.
+        autocrop: If True, remove white borders from images (for InDesign EPUBs where viewport > image).
 
     Falls back to CBZ if RAR is not available.
     """
@@ -819,8 +926,9 @@ def create_cbr(screenshots_dir: Path, output_path: Path, jpeg_quality: int = 92,
     if jpeg_quality > 0 and epub_type == "screenshot":
         png_count = len(list(screenshots_dir.glob("page_*.png")))
         if png_count > 0:
-            print(f"🔄 Converting {png_count} images to JPEG (quality={jpeg_quality})...")
-            converted = convert_to_jpeg(screenshots_dir, jpeg_quality)
+            autocrop_msg = " with autocrop" if autocrop else ""
+            print(f"🔄 Converting {png_count} images to JPEG (quality={jpeg_quality}){autocrop_msg}...")
+            converted = convert_to_jpeg(screenshots_dir, jpeg_quality, autocrop=autocrop)
             if converted > 0:
                 print(f"   Converted {converted} images")
 
@@ -882,7 +990,7 @@ def convert_epub(
     delay: int = 1,
     keep_extracted: bool = False,
     threads: int = 4,
-) -> Tuple[Path, str]:
+) -> Tuple[Path, str, int, int, bool]:
     """
     Main conversion function.
 
@@ -896,7 +1004,7 @@ def convert_epub(
         threads: Number of parallel threads for screenshot mode
 
     Returns:
-        Tuple of (screenshots_dir, epub_type)
+        Tuple of (screenshots_dir, epub_type, success_count, total_pages, needs_autocrop)
     """
     epub_path = Path(epub_path).resolve()
 
@@ -924,7 +1032,7 @@ def convert_epub(
             raise ValueError("No HTML files found in EPUB")
 
         # Determine EPUB type
-        epub_type, vp_width, vp_height, scale_factor = determine_epub_type(html_files)
+        epub_type, vp_width, vp_height, scale_factor, needs_autocrop = determine_epub_type(html_files)
 
         # Override if manual mode specified
         if mode == "extract":
@@ -958,6 +1066,7 @@ def convert_epub(
         # Process based on type
         success_count = 0
         total = len(html_files)
+        failed_extractions = []  # Track pages that failed extraction for screenshot fallback
 
         if epub_type == "extract":
             # Direct extraction - handles both single and multiple images
@@ -969,42 +1078,108 @@ def convert_epub(
                 # Use concatenate which handles both single and multi-image pages
                 if concatenate_images(html_path, output_path):
                     success_count += 1
+                else:
+                    # Track failed extractions for screenshot fallback
+                    failed_extractions.append((i, html_path, output_path))
 
             print()
 
+            # Fallback: use screenshot for pages that couldn't be extracted
+            if failed_extractions and check_gowitness_available():
+                print(
+                    f"\n🔄 Using screenshot fallback for {len(failed_extractions)} pages without extractable images..."
+                )
+
+                # Find content root for serving
+                html_parent = html_files[0].parent
+                content_root = None
+                for html_file in html_files:
+                    if "OEBPS" in str(html_file):
+                        content_root = html_file.parent
+                        while content_root.name != "OEBPS" and content_root != extract_path:
+                            content_root = content_root.parent
+                        break
+                if content_root is None:
+                    parent = html_parent.parent
+                    if (parent / "images").exists() or (parent / "styles").exists():
+                        content_root = parent
+                    else:
+                        content_root = html_parent
+
+                # Start server
+                port = find_free_port()
+                server = start_http_server(content_root, port)
+                time.sleep(0.3)
+
+                try:
+                    for i, html_path, output_path in failed_extractions:
+                        try:
+                            url_path = str(html_path.relative_to(content_root))
+                        except ValueError:
+                            url_path = html_path.name
+                        url = f"http://127.0.0.1:{port}/{url_path}"
+
+                        if capture_with_gowitness(url, output_path, vp_width, vp_height, timeout=15, delay=1):
+                            success_count += 1
+                            print(f"   ✅ {html_path.name} (screenshot)")
+                        else:
+                            print(f"   ❌ {html_path.name} (failed)")
+                finally:
+                    server.shutdown()
+
         else:
             # Screenshot mode with gowitness
-            # Find OEBPS directory
-            oebps_dir = None
+            # Find the content root directory (OEBPS or epub root)
+            # We need to serve from a directory that contains all resources (images, css, etc.)
+            content_root = None
+            html_parent = html_files[0].parent
+
+            # Check if OEBPS structure
             for html_file in html_files:
                 if "OEBPS" in str(html_file):
-                    oebps_dir = html_file.parent
-                    while oebps_dir.name != "OEBPS" and oebps_dir != extract_path:
-                        oebps_dir = oebps_dir.parent
+                    content_root = html_file.parent
+                    while content_root.name != "OEBPS" and content_root != extract_path:
+                        content_root = content_root.parent
                     break
 
-            if oebps_dir is None:
-                oebps_dir = html_files[0].parent
+            # If no OEBPS, find the common root that contains resources
+            if content_root is None:
+                # Check if resources are in parent directory (e.g., text/ with ../images/)
+                parent = html_parent.parent
+                if (parent / "images").exists() or (parent / "styles").exists():
+                    content_root = parent
+                else:
+                    content_root = html_parent
+
+            # Get the relative path from content_root to html files
+            html_subdir = html_parent.relative_to(content_root) if html_parent != content_root else Path(".")
 
             # Prepare scaled HTML files if needed
             scaled_dir = None
             if scale_factor > 1.0:
                 scaled_dir = temp_path / "scaled_html"
                 scaled_dir.mkdir(parents=True, exist_ok=True)
-                # Copy CSS and other resources
-                for css_dir in oebps_dir.glob("css"):
-                    shutil.copytree(css_dir, scaled_dir / "css", dirs_exist_ok=True)
-                for font_dir in oebps_dir.glob("fonts"):
-                    shutil.copytree(font_dir, scaled_dir / "fonts", dirs_exist_ok=True)
+
+                # Copy all resource directories from content_root
+                for resource_dir in ["css", "styles", "fonts", "Fonts", "CSS", "Styles"]:
+                    src = content_root / resource_dir
+                    if src.exists():
+                        shutil.copytree(src, scaled_dir / resource_dir, dirs_exist_ok=True)
+
                 # Link images directory (don't copy, too large)
-                images_src = oebps_dir / "images"
-                if images_src.exists():
-                    images_dst = scaled_dir / "images"
-                    if not images_dst.exists():
-                        images_dst.symlink_to(images_src)
+                for img_dir in ["images", "Images", "image", "img"]:
+                    images_src = content_root / img_dir
+                    if images_src.exists():
+                        images_dst = scaled_dir / img_dir
+                        if not images_dst.exists():
+                            images_dst.symlink_to(images_src)
+
+                # Create the html subdirectory structure if needed
+                if html_subdir != Path("."):
+                    (scaled_dir / html_subdir).mkdir(parents=True, exist_ok=True)
 
             # Start HTTP server on the appropriate directory
-            serve_dir = scaled_dir if scaled_dir else oebps_dir
+            serve_dir = scaled_dir if scaled_dir else content_root
             port = find_free_port()
             server = start_http_server(serve_dir, port)
             time.sleep(0.5)
@@ -1019,11 +1194,16 @@ def convert_epub(
                 for i, html_path in enumerate(html_files, 1):
                     # Prepare scaled HTML if needed
                     if scaled_dir and scale_factor > 1.0:
-                        scaled_html = prepare_scaled_html(html_path, scaled_dir, scale_factor)
-                        url_path = scaled_html.name
+                        # Put scaled HTML in the correct subdirectory
+                        if html_subdir != Path("."):
+                            scaled_html = prepare_scaled_html(html_path, scaled_dir / html_subdir, scale_factor)
+                            url_path = str(html_subdir / scaled_html.name)
+                        else:
+                            scaled_html = prepare_scaled_html(html_path, scaled_dir, scale_factor)
+                            url_path = scaled_html.name
                     else:
                         try:
-                            url_path = str(html_path.relative_to(oebps_dir))
+                            url_path = str(html_path.relative_to(content_root))
                         except ValueError:
                             url_path = html_path.name
 
@@ -1076,7 +1256,7 @@ def convert_epub(
             shutil.rmtree(temp_gowitness)
 
     print(f"📸 Images saved to: {screenshots_dir}")
-    return screenshots_dir, epub_type
+    return screenshots_dir, epub_type, success_count, total, needs_autocrop
 
 
 # =============================================================================
@@ -1136,7 +1316,7 @@ Examples:
     start_time = time.time()
 
     try:
-        screenshots_dir, epub_type = convert_epub(
+        screenshots_dir, epub_type, success_count, total_pages, needs_autocrop = convert_epub(
             epub_path=args.epub,
             output_dir=args.output,
             mode=args.mode,
@@ -1146,20 +1326,44 @@ Examples:
             threads=args.threads,
         )
 
+        # Determine if conversion is complete or incomplete
+        is_complete = success_count == total_pages
+
         # Create CBR if requested
         if args.cbr or args.cbr_only:
             # Create 'converted' directory next to the EPUB file (use absolute path)
             converted_dir = args.epub.resolve().parent / "converted"
             converted_dir.mkdir(parents=True, exist_ok=True)
 
-            cbr_path = converted_dir / f"{args.epub.stem}.cbr"
+            # Incomplete conversions go to 'review' subfolder
+            if not is_complete:
+                output_subdir = converted_dir / "review"
+                output_subdir.mkdir(parents=True, exist_ok=True)
+                print(f"⚠️  Incomplete conversion ({success_count}/{total_pages}) → review folder")
+            else:
+                output_subdir = converted_dir
+
+            cbr_path = output_subdir / f"{args.epub.stem}.cbr"
             jpeg_quality = 0 if args.no_jpeg else args.jpeg_quality
-            if create_cbr(screenshots_dir, cbr_path, jpeg_quality, epub_type):
+            if create_cbr(screenshots_dir, cbr_path, jpeg_quality, epub_type, autocrop=needs_autocrop):
                 # Delete the entire _images directory after creating CBR
                 images_dir = screenshots_dir.parent
                 if images_dir.exists():
                     shutil.rmtree(images_dir)
                     print("🗑️  Deleted working directory")
+
+            # Log incomplete conversions to error log
+            if not is_complete:
+                log_file = converted_dir / "conversion_errors.log"
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                log_entry = (
+                    f"[{timestamp}] {args.epub.name}: "
+                    f"{success_count}/{total_pages} pages converted "
+                    f"({total_pages - success_count} missing)\n"
+                )
+                with open(log_file, "a") as f:
+                    f.write(log_entry)
+                print(f"📝 Error logged to: {log_file}")
 
         elapsed = time.time() - start_time
         minutes, seconds = divmod(int(elapsed), 60)
