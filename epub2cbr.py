@@ -958,6 +958,7 @@ def convert_epub(
         # Process based on type
         success_count = 0
         total = len(html_files)
+        failed_extractions = []  # Track pages that failed extraction for screenshot fallback
 
         if epub_type == "extract":
             # Direct extraction - handles both single and multiple images
@@ -969,42 +970,108 @@ def convert_epub(
                 # Use concatenate which handles both single and multi-image pages
                 if concatenate_images(html_path, output_path):
                     success_count += 1
+                else:
+                    # Track failed extractions for screenshot fallback
+                    failed_extractions.append((i, html_path, output_path))
 
             print()
 
+            # Fallback: use screenshot for pages that couldn't be extracted
+            if failed_extractions and check_gowitness_available():
+                print(
+                    f"\n🔄 Using screenshot fallback for {len(failed_extractions)} pages without extractable images..."
+                )
+
+                # Find content root for serving
+                html_parent = html_files[0].parent
+                content_root = None
+                for html_file in html_files:
+                    if "OEBPS" in str(html_file):
+                        content_root = html_file.parent
+                        while content_root.name != "OEBPS" and content_root != extract_path:
+                            content_root = content_root.parent
+                        break
+                if content_root is None:
+                    parent = html_parent.parent
+                    if (parent / "images").exists() or (parent / "styles").exists():
+                        content_root = parent
+                    else:
+                        content_root = html_parent
+
+                # Start server
+                port = find_free_port()
+                server = start_http_server(content_root, port)
+                time.sleep(0.3)
+
+                try:
+                    for i, html_path, output_path in failed_extractions:
+                        try:
+                            url_path = str(html_path.relative_to(content_root))
+                        except ValueError:
+                            url_path = html_path.name
+                        url = f"http://127.0.0.1:{port}/{url_path}"
+
+                        if capture_with_gowitness(url, output_path, vp_width, vp_height, timeout=15, delay=1):
+                            success_count += 1
+                            print(f"   ✅ {html_path.name} (screenshot)")
+                        else:
+                            print(f"   ❌ {html_path.name} (failed)")
+                finally:
+                    server.shutdown()
+
         else:
             # Screenshot mode with gowitness
-            # Find OEBPS directory
-            oebps_dir = None
+            # Find the content root directory (OEBPS or epub root)
+            # We need to serve from a directory that contains all resources (images, css, etc.)
+            content_root = None
+            html_parent = html_files[0].parent
+
+            # Check if OEBPS structure
             for html_file in html_files:
                 if "OEBPS" in str(html_file):
-                    oebps_dir = html_file.parent
-                    while oebps_dir.name != "OEBPS" and oebps_dir != extract_path:
-                        oebps_dir = oebps_dir.parent
+                    content_root = html_file.parent
+                    while content_root.name != "OEBPS" and content_root != extract_path:
+                        content_root = content_root.parent
                     break
 
-            if oebps_dir is None:
-                oebps_dir = html_files[0].parent
+            # If no OEBPS, find the common root that contains resources
+            if content_root is None:
+                # Check if resources are in parent directory (e.g., text/ with ../images/)
+                parent = html_parent.parent
+                if (parent / "images").exists() or (parent / "styles").exists():
+                    content_root = parent
+                else:
+                    content_root = html_parent
+
+            # Get the relative path from content_root to html files
+            html_subdir = html_parent.relative_to(content_root) if html_parent != content_root else Path(".")
 
             # Prepare scaled HTML files if needed
             scaled_dir = None
             if scale_factor > 1.0:
                 scaled_dir = temp_path / "scaled_html"
                 scaled_dir.mkdir(parents=True, exist_ok=True)
-                # Copy CSS and other resources
-                for css_dir in oebps_dir.glob("css"):
-                    shutil.copytree(css_dir, scaled_dir / "css", dirs_exist_ok=True)
-                for font_dir in oebps_dir.glob("fonts"):
-                    shutil.copytree(font_dir, scaled_dir / "fonts", dirs_exist_ok=True)
+
+                # Copy all resource directories from content_root
+                for resource_dir in ["css", "styles", "fonts", "Fonts", "CSS", "Styles"]:
+                    src = content_root / resource_dir
+                    if src.exists():
+                        shutil.copytree(src, scaled_dir / resource_dir, dirs_exist_ok=True)
+
                 # Link images directory (don't copy, too large)
-                images_src = oebps_dir / "images"
-                if images_src.exists():
-                    images_dst = scaled_dir / "images"
-                    if not images_dst.exists():
-                        images_dst.symlink_to(images_src)
+                for img_dir in ["images", "Images", "image", "img"]:
+                    images_src = content_root / img_dir
+                    if images_src.exists():
+                        images_dst = scaled_dir / img_dir
+                        if not images_dst.exists():
+                            images_dst.symlink_to(images_src)
+
+                # Create the html subdirectory structure if needed
+                if html_subdir != Path("."):
+                    (scaled_dir / html_subdir).mkdir(parents=True, exist_ok=True)
 
             # Start HTTP server on the appropriate directory
-            serve_dir = scaled_dir if scaled_dir else oebps_dir
+            serve_dir = scaled_dir if scaled_dir else content_root
             port = find_free_port()
             server = start_http_server(serve_dir, port)
             time.sleep(0.5)
@@ -1019,11 +1086,16 @@ def convert_epub(
                 for i, html_path in enumerate(html_files, 1):
                     # Prepare scaled HTML if needed
                     if scaled_dir and scale_factor > 1.0:
-                        scaled_html = prepare_scaled_html(html_path, scaled_dir, scale_factor)
-                        url_path = scaled_html.name
+                        # Put scaled HTML in the correct subdirectory
+                        if html_subdir != Path("."):
+                            scaled_html = prepare_scaled_html(html_path, scaled_dir / html_subdir, scale_factor)
+                            url_path = str(html_subdir / scaled_html.name)
+                        else:
+                            scaled_html = prepare_scaled_html(html_path, scaled_dir, scale_factor)
+                            url_path = scaled_html.name
                     else:
                         try:
-                            url_path = str(html_path.relative_to(oebps_dir))
+                            url_path = str(html_path.relative_to(content_root))
                         except ValueError:
                             url_path = html_path.name
 
