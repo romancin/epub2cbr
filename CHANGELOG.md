@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+## [v0.1.0] - 2025-12-06
+
+### Changed
+- fix: CSS scaling for InDesign-exported EPUBs [MINOR] (#3) (aa1197d)
+- docs: Update CHANGELOG.md for v0.0.5 [skip ci] (5992a3c)
+
+
 ## [v0.0.5] - 2025-12-06
 
 ### Changed
@@ -46,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--threads` - Parallel screenshot processing
 - `--timeout` / `--delay` - Screenshot timing control
 
-[Unreleased]: https://github.com/romancin/epub2cbr/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/romancin/epub2cbr/compare/v0.1.0...HEAD
+[v0.1.0]: https://github.com/romancin/epub2cbr/releases/tag/v0.1.0
 [v0.0.5]: https://github.com/romancin/epub2cbr/releases/tag/v0.0.5
 [v0.0.1]: https://github.com/romancin/epub2cbr/releases/tag/v0.0.1
