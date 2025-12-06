@@ -465,6 +465,50 @@ def find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def scale_css_file(css_path: Path, output_path: Path, scale_factor: float) -> None:
+    """
+    Scale all pixel values in an external CSS file.
+
+    This handles CSS files from InDesign-exported EPUBs that use
+    absolute positioning with fixed pixel values.
+    """
+    if scale_factor <= 1.0:
+        shutil.copy(css_path, output_path)
+        return
+
+    content = css_path.read_text(encoding="utf-8", errors="ignore")
+
+    # Scale all pixel values in CSS properties
+    # Match properties like: width:396.85px; height:572.60px; left:0px; top:0px;
+    def scale_px_value(match):
+        prop = match.group(1)
+        value = float(match.group(2))
+        scaled = value * scale_factor
+        return f"{prop}:{scaled:.2f}px"
+
+    content = re.sub(
+        r"(width|height|left|right|top|bottom|min-width|min-height|max-width|max-height):(-?\d+\.?\d*)px",
+        scale_px_value,
+        content,
+    )
+
+    # Scale translate values in transform
+    def scale_translate(match):
+        prefix = match.group(1)
+        x = float(match.group(2)) * scale_factor
+        y = float(match.group(3)) * scale_factor
+        suffix = match.group(4)
+        return f"{prefix}translate({x:.3f}px,{y:.3f}px){suffix};"
+
+    content = re.sub(
+        r"(-webkit-transform:|transform:)translate\((-?\d+\.?\d*)px,(-?\d+\.?\d*)px\)(.*?);",
+        scale_translate,
+        content,
+    )
+
+    output_path.write_text(content, encoding="utf-8")
+
+
 def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) -> Path:
     """
     Create a scaled version of the HTML file for high-resolution screenshots.
@@ -520,11 +564,22 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
 
     content = re.sub(r"<style[^>]*>(.*?)</style>", scale_style_block, content, flags=re.DOTALL)
 
-    # Scale inline img dimensions
+    # Scale inline img dimensions (both attribute and style)
     def scale_img(match):
         full_match = match.group(0)
+        # Scale width/height attributes
         full_match = re.sub(r'width="(\d+)"', lambda m: f'width="{int(int(m.group(1)) * scale_factor)}"', full_match)
         full_match = re.sub(r'height="(\d+)"', lambda m: f'height="{int(int(m.group(1)) * scale_factor)}"', full_match)
+        # Scale width/height in inline style
+        full_match = re.sub(
+            r'style="([^"]*)"',
+            lambda m: 'style="' + re.sub(
+                r"(width|height):(\d+)px",
+                lambda px: f"{px.group(1)}:{int(int(px.group(2)) * scale_factor)}px",
+                m.group(1)
+            ) + '"',
+            full_match
+        )
         return full_match
 
     content = re.sub(r"<img[^>]+>", scale_img, content)
@@ -532,12 +587,35 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
     # Scale TextContainer transform scale (this is the key!)
     # The original scale is something like scale(0.031267)
     # We need to keep the SAME visual scale, so multiply by scale_factor
+    # Handle both "transform:scale(X)" and "transform: ... scale(X)" formats
+    # Only scale single-parameter scale(), not scale(x,y) which might be for flipping
     def scale_transform(match):
         original_scale = float(match.group(1))
         new_scale = original_scale * scale_factor
-        return f"transform:scale({new_scale:.6f})"
+        return f"scale({new_scale:.6f})"
 
-    content = re.sub(r"transform:scale\(([0-9.]+)\)", scale_transform, content)
+    # Match scale() with single parameter (not followed by comma and another number)
+    content = re.sub(r"scale\(([0-9.]+)\)(?!\s*,)", scale_transform, content)
+
+    # Scale translate values in inline transform styles
+    def scale_translate(match):
+        x = float(match.group(1)) * scale_factor
+        y = float(match.group(2)) * scale_factor
+        return f"translate({x:.2f}px,{y:.2f}px)"
+
+    content = re.sub(r"translate\((-?\d+\.?\d*)px,(-?\d+\.?\d*)px\)", scale_translate, content)
+
+    # NOTE: We do NOT scale div styles with width/height here because:
+    # 1. Divs that contain transformed content (with scale()) use their dimensions
+    #    as the internal coordinate space, which gets scaled by the transform.
+    # 2. Divs positioned by external CSS (#_idContainer* rules) are scaled by
+    #    the scale_css_file function.
+    # Only the viewport, body, and CSS file dimensions need scaling.
+
+    # NOTE: We do NOT scale span positions because spans with absolute positioning
+    # are typically inside transformed containers (with scale()). The transform
+    # already handles the visual scaling, so span positions should remain in their
+    # original coordinate space.
 
     # Write scaled HTML
     output_path = output_dir / html_path.name
@@ -1160,11 +1238,22 @@ def convert_epub(
                 scaled_dir = temp_path / "scaled_html"
                 scaled_dir.mkdir(parents=True, exist_ok=True)
 
-                # Copy all resource directories from content_root
+                # Copy and scale CSS resource directories from content_root
                 for resource_dir in ["css", "styles", "fonts", "Fonts", "CSS", "Styles"]:
                     src = content_root / resource_dir
                     if src.exists():
-                        shutil.copytree(src, scaled_dir / resource_dir, dirs_exist_ok=True)
+                        dst = scaled_dir / resource_dir
+                        dst.mkdir(parents=True, exist_ok=True)
+                        for item in src.iterdir():
+                            if item.is_file():
+                                if item.suffix.lower() == ".css":
+                                    # Scale CSS files
+                                    scale_css_file(item, dst / item.name, scale_factor)
+                                else:
+                                    # Copy other files (fonts, etc.)
+                                    shutil.copy(item, dst / item.name)
+                            elif item.is_dir():
+                                shutil.copytree(item, dst / item.name, dirs_exist_ok=True)
 
                 # Link images directory (don't copy, too large)
                 for img_dir in ["images", "Images", "image", "img"]:
