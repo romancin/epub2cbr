@@ -4,11 +4,12 @@
 [![Release](https://github.com/romancin/epub2cbr/actions/workflows/release.yml/badge.svg)](https://github.com/romancin/epub2cbr/actions/workflows/release.yml)
 [![GitHub release](https://img.shields.io/github/v/release/romancin/epub2cbr)](https://github.com/romancin/epub2cbr/releases)
 
-Convert EPUB comic/manga files to CBR (Comic Book RAR) archives.
+Convert EPUB and PDF comic/manga files to CBR (Comic Book RAR) archives.
 
 ## Features
 
-- **Automatic detection** of EPUB structure for optimal conversion
+- **EPUB support** with automatic structure detection for optimal conversion
+- **PDF support** with high-quality page rendering
 - **High-quality output** with automatic resolution scaling
 - **CBR creation** ready for comic book readers
 - Preserves reading order from EPUB metadata
@@ -18,10 +19,12 @@ Convert EPUB comic/manga files to CBR (Comic Book RAR) archives.
 ```bash
 # Using Docker (recommended - no dependencies needed)
 docker run --rm -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest comic.epub --cbr-only
+docker run --rm -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest comic.pdf --cbr-only
 
 # Or install locally with mise
 mise install && mise run setup-all
 ./epub2cbr.py comic.epub --cbr-only
+./epub2cbr.py comic.pdf --cbr-only
 ```
 
 ## Installation
@@ -34,11 +37,14 @@ No dependencies needed - everything is included in the container.
 # Pull the image from GitHub Container Registry
 docker pull ghcr.io/romancin/epub2cbr:latest
 
-# Convert a single file
+# Convert EPUB
 docker run --rm  -it -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest manga.epub --cbr-only
 
-# Batch conversion
-for f in *.epub; do docker run --rm -it -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest "$f" --cbr-only; done
+# Convert PDF
+docker run --rm  -it -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest comic.pdf --cbr-only
+
+# Batch conversion (EPUB and PDF)
+for f in *.epub *.pdf; do docker run --rm -it -v $(pwd):/data ghcr.io/romancin/epub2cbr:latest "$f" --cbr-only; done
 
 # Or build locally
 docker build -t epub2cbr .
@@ -69,11 +75,17 @@ brew install rar  # macOS (or: sudo apt install rar on Linux/WSL)
 ## Usage
 
 ```bash
-# Basic conversion (auto-detects best method)
+# Basic EPUB conversion (auto-detects best method)
 ./epub2cbr.py comic.epub --cbr-only
 
-# Batch conversion
-for f in *.epub; do ./epub2cbr.py "$f" --cbr-only; done
+# PDF conversion
+./epub2cbr.py comic.pdf --cbr-only
+
+# PDF with custom DPI (default: 200)
+./epub2cbr.py comic.pdf --cbr-only --dpi 300
+
+# Batch conversion (EPUB and PDF)
+for f in *.epub *.pdf; do ./epub2cbr.py "$f" --cbr-only; done
 
 # Keep intermediate images
 ./epub2cbr.py comic.epub --cbr
@@ -89,14 +101,17 @@ for f in *.epub; do ./epub2cbr.py "$f" --cbr-only; done
 
 | Option | Description |
 |--------|-------------|
-| `-m extract` | Force direct image extraction |
-| `-m screenshot` | Force screenshot mode (gowitness) |
+| `-m extract` | Force direct image extraction (EPUB only) |
+| `-m screenshot` | Force screenshot mode with gowitness (EPUB only) |
+| `--dpi N` | DPI for PDF rendering (default: 200) |
 | `--threads N` | Parallel threads for screenshot mode (default: 4) |
 | `--keep-extracted` | Keep extracted EPUB files |
 | `--timeout N` | Screenshot timeout in seconds |
 | `--check-deps` | Verify all dependencies |
 
 ## How it works
+
+### EPUB conversion
 
 The tool analyzes EPUB structure to choose the best conversion method:
 
@@ -105,13 +120,18 @@ The tool analyzes EPUB structure to choose the best conversion method:
 | Text embedded in images | Empty `TextContainer` | Direct extraction |
 | Text in HTML overlay | `TextContainer` has content | Screenshot rendering |
 
+### PDF conversion
+
+PDF pages are rendered to high-quality images using PyMuPDF at the specified DPI (default: 200).
+
 ## Requirements
 
 | Dependency | Required | Purpose |
 |------------|----------|---------|
 | Python 3 | Yes | Core runtime |
 | Pillow | Yes | Image processing |
-| gowitness | Only for HTML text | Screenshot capture |
+| PyMuPDF | Only for PDF | PDF page rendering |
+| gowitness | Only for HTML EPUB | Screenshot capture |
 | rar | Only for CBR | Archive creation |
 
 ## Troubleshooting
