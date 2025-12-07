@@ -708,12 +708,14 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
         # Scale width/height in inline style
         full_match = re.sub(
             r'style="([^"]*)"',
-            lambda m: 'style="' + re.sub(
+            lambda m: 'style="'
+            + re.sub(
                 r"(width|height):(\d+)px",
                 lambda px: f"{px.group(1)}:{int(int(px.group(2)) * scale_factor)}px",
-                m.group(1)
-            ) + '"',
-            full_match
+                m.group(1),
+            )
+            + '"',
+            full_match,
         )
         return full_match
 
@@ -1059,8 +1061,6 @@ def convert_to_jpeg(screenshots_dir: Path, quality: int = 92, autocrop: bool = T
 
     return converted
 
-    return converted
-
 
 def check_zip_available() -> bool:
     """Check if zip command is available for CBZ creation."""
@@ -1135,10 +1135,8 @@ def create_cbr(
         print("❌ Error: Neither 'rar' nor 'zip' command found")
         return False
 
-    # Convert PNGs to JPEG for screenshot and pdf modes (unless disabled)
-    # Extract mode already has high-quality images, no need to convert
-    should_convert = source_type in ("screenshot", "pdf")
-    if jpeg_quality > 0 and should_convert:
+    # Convert PNGs to JPEG (unless disabled)
+    if jpeg_quality > 0:
         png_count = len(list(screenshots_dir.glob("page_*.png")))
         if png_count > 0:
             autocrop_msg = " with autocrop" if autocrop else ""
