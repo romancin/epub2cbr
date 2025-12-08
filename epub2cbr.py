@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-epub2cbr - Convert EPUB comic/manga files to CBR
+epub2cbr - Convert EPUB/PDF comic/manga files to CBR
 
-Supports three types of EPUB structures:
-1. Single image WITH text in image -> Extract directly (best quality)
-2. Single/Split images WITHOUT text in image -> Screenshot with gowitness
-3. Split images WITH text in image -> Concatenate images (best quality)
+Supports:
+- EPUB files with three types of structures:
+  1. Single image WITH text in image -> Extract directly (best quality)
+  2. Single/Split images WITHOUT text in image -> Screenshot with gowitness
+  3. Split images WITH text in image -> Concatenate images (best quality)
+- PDF files -> Extract pages as images directly
 """
 
 import argparse
@@ -28,12 +30,17 @@ try:
 except ImportError:
     Image = None
 
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
 
 def print_banner():
     banner = """
     ╔═══════════════════════════════════════════════════════════╗
     ║                       epub2cbr                            ║
-    ║         EPUB to CBR Converter for Comics/Manga            ║
+    ║       EPUB/PDF to CBR Converter for Comics/Manga          ║
     ╚═══════════════════════════════════════════════════════════╝
     """
     print(banner)
@@ -87,6 +94,192 @@ def check_dependencies(need_gowitness: bool = False) -> bool:
         print("⚠️  Warning: rar not available, will create CBZ (zip) instead of CBR")
 
     return True
+
+
+# =============================================================================
+# PDF Conversion
+# =============================================================================
+
+
+def check_pdf_available() -> bool:
+    """Check if PyMuPDF is available for PDF processing."""
+    return fitz is not None
+
+def convert_pdf_to_images(
+    pdf_path: Path,
+    output_dir: Path,
+    dpi: int = 0,
+    jpeg_quality: int = 92,
+    normalize: bool = False,
+) -> Tuple[Path, int, int]:
+    """
+    Convert PDF pages to images.
+    If normalize=True, it finds the smallest page dimensions and
+    center-crops larger pages to match exactly (removing margins).
+    """
+    if fitz is None:
+        raise RuntimeError("PyMuPDF not installed. Install with: pip install PyMuPDF")
+
+    if Image is None and normalize:
+        raise RuntimeError(
+            "Pillow not installed, which is required for normalization. Install with: pip install Pillow"
+        )
+
+    pdf_path = Path(pdf_path).resolve()
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    screenshots_dir = output_dir / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"📄 Opening PDF: {pdf_path.name}")
+
+    pdf = fitz.open(pdf_path)
+    total_pages = len(pdf)
+
+    print(f"📄 PDF has {total_pages} pages")
+
+    # Auto-detect optimal DPI from embedded images if not specified
+    if dpi == 0:
+        dpi = _detect_optimal_dpi(pdf)
+
+    print(f"📐 Rendering at {dpi} DPI")
+
+    zoom = dpi / 72.0
+    matrix = fitz.Matrix(zoom, zoom)
+
+    target_width, target_height = 0, 0
+    if normalize and total_pages > 0:
+        print("📏 Analyzing page sizes for normalization...")
+        min_area = float("inf")
+
+        # First pass: Find the smallest page area to act as the target
+        # Using the smallest page ensures we crop larger ones rather than upscaling (blurring) smaller ones
+        for page_num in range(total_pages):
+            page = pdf[page_num]
+            rect = page.rect
+            width = int(rect.width * zoom)
+            height = int(rect.height * zoom)
+
+            area = width * height
+            if area < min_area:
+                min_area = area
+                target_width = width
+                target_height = height
+
+        if target_width > 0:
+            print(
+                f"📏 Normalizing all pages to strict size: {target_width}x{target_height} pixels (Center Crop)"
+            )
+        else:
+            normalize = False
+
+    success_count = 0
+
+    for page_num in range(total_pages):
+        print(f"\r📸 Processing page {page_num + 1}/{total_pages}", end="", flush=True)
+
+        try:
+            page = pdf[page_num]
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
+            png_path = screenshots_dir / f"page_{page_num + 1:04d}.png"
+
+            # Check if processing is needed
+            if normalize and (pix.width != target_width or pix.height != target_height):
+                # Convert to PIL Image
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+                # --- Aspect Fill + Center Crop Logic ---
+
+                # 1. Calculate scale factors for both dimensions
+                width_ratio = target_width / img.width
+                height_ratio = target_height / img.height
+
+                # 2. Use the LARGER ratio to ensure the image fills the target completely
+                scale = max(width_ratio, height_ratio)
+
+                # 3. Calculate new dimensions (will be >= target dimensions)
+                new_width = int(round(img.width * scale))
+                new_height = int(round(img.height * scale))
+
+                # Safety check to prevent rounding errors making it 1px too small
+                new_width = max(new_width, target_width)
+                new_height = max(new_height, target_height)
+
+                # 4. Resize the image
+                if scale != 1.0:
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                # 5. Center Crop to exact target size
+                left = (new_width - target_width) // 2
+                top = (new_height - target_height) // 2
+                right = left + target_width
+                bottom = top + target_height
+
+                img = img.crop((left, top, right, bottom))
+                img.save(str(png_path))
+            else:
+                # Save directly if no normalization needed or size already matches exactly
+                pix.save(str(png_path))
+
+            success_count += 1
+
+        except Exception as e:
+            print(f"\n⚠️  Error on page {page_num + 1}: {e}")
+
+    pdf.close()
+    print()  # New line after progress
+
+    print(f"✅ Successfully extracted {success_count}/{total_pages} pages")
+    print(f"📸 Images saved to: {screenshots_dir}")
+
+    return screenshots_dir, success_count, total_pages
+
+def _detect_optimal_dpi(pdf) -> int:
+    """
+    Detect optimal DPI by analyzing embedded images in the PDF.
+
+    Returns DPI that will render pages at the same resolution as embedded images.
+    """
+    sample_pages = min(5, len(pdf))
+
+    for page_num in range(sample_pages):
+        page = pdf[page_num]
+        images = page.get_images(full=True)
+
+        if not images:
+            continue
+
+        # Get page dimensions in points
+        page_width = page.rect.width
+        page_height = page.rect.height
+
+        # Find the largest image on this page
+        for img in images:
+            xref = img[0]
+            try:
+                base_image = pdf.extract_image(xref)
+                img_width = base_image.get("width", 0)
+                img_height = base_image.get("height", 0)
+
+                if img_width > 0 and img_height > 0:
+                    # Calculate DPI that would produce this image size
+                    dpi_x = (img_width / page_width) * 72
+                    dpi_y = (img_height / page_height) * 72
+                    calculated_dpi = int((dpi_x + dpi_y) / 2)
+
+                    if calculated_dpi > 72:  # Sanity check
+                        print(f"📐 Detected image resolution: {img_width}x{img_height} → {calculated_dpi} DPI")
+                        return calculated_dpi
+
+            except Exception:
+                continue
+
+    # Default fallback
+    print("📐 No embedded images found, using default 150 DPI")
+    return 150
 
 
 # =============================================================================
@@ -508,7 +701,6 @@ def scale_css_file(css_path: Path, output_path: Path, scale_factor: float) -> No
 
     output_path.write_text(content, encoding="utf-8")
 
-
 def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) -> Path:
     """
     Create a scaled version of the HTML file for high-resolution screenshots.
@@ -521,9 +713,14 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
     if scale_factor <= 1.0:
         return html_path
 
+    # 1. READ THE FILE FIRST (This line must be before using 'content')
     content = html_path.read_text(encoding="utf-8", errors="ignore")
 
-    # Scale viewport meta tag
+    # 2. APPLY INDESIGN FIX (Force visible overflow)
+    content = content.replace("overflow:hidden", "overflow:visible")
+    content = content.replace("overflow: hidden", "overflow: visible")
+
+    # 3. Scale viewport meta tag
     def scale_viewport(match):
         width = int(int(match.group(1)) * scale_factor)
         height = int(int(match.group(2)) * scale_factor)
@@ -573,28 +770,26 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
         # Scale width/height in inline style
         full_match = re.sub(
             r'style="([^"]*)"',
-            lambda m: 'style="' + re.sub(
+            lambda m: 'style="'
+            + re.sub(
                 r"(width|height):(\d+)px",
                 lambda px: f"{px.group(1)}:{int(int(px.group(2)) * scale_factor)}px",
-                m.group(1)
-            ) + '"',
-            full_match
+                m.group(1),
+            )
+            + '"',
+            full_match,
         )
         return full_match
 
     content = re.sub(r"<img[^>]+>", scale_img, content)
 
-    # Scale TextContainer transform scale (this is the key!)
-    # The original scale is something like scale(0.031267)
-    # We need to keep the SAME visual scale, so multiply by scale_factor
-    # Handle both "transform:scale(X)" and "transform: ... scale(X)" formats
-    # Only scale single-parameter scale(), not scale(x,y) which might be for flipping
+    # Scale TextContainer transform scale
     def scale_transform(match):
         original_scale = float(match.group(1))
         new_scale = original_scale * scale_factor
         return f"scale({new_scale:.6f})"
 
-    # Match scale() with single parameter (not followed by comma and another number)
+    # Match scale() with single parameter
     content = re.sub(r"scale\(([0-9.]+)\)(?!\s*,)", scale_transform, content)
 
     # Scale translate values in inline transform styles
@@ -605,24 +800,11 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
 
     content = re.sub(r"translate\((-?\d+\.?\d*)px,(-?\d+\.?\d*)px\)", scale_translate, content)
 
-    # NOTE: We do NOT scale div styles with width/height here because:
-    # 1. Divs that contain transformed content (with scale()) use their dimensions
-    #    as the internal coordinate space, which gets scaled by the transform.
-    # 2. Divs positioned by external CSS (#_idContainer* rules) are scaled by
-    #    the scale_css_file function.
-    # Only the viewport, body, and CSS file dimensions need scaling.
-
-    # NOTE: We do NOT scale span positions because spans with absolute positioning
-    # are typically inside transformed containers (with scale()). The transform
-    # already handles the visual scaling, so span positions should remain in their
-    # original coordinate space.
-
     # Write scaled HTML
     output_path = output_dir / html_path.name
     output_path.write_text(content, encoding="utf-8")
 
     return output_path
-
 
 def start_http_server(directory: Path, port: int):
     """Start HTTP server for the directory."""
@@ -634,7 +816,7 @@ def start_http_server(directory: Path, port: int):
 
 
 def capture_with_gowitness(
-    url: str, output_path: Path, width: int, height: int, timeout: int = 30, delay: int = 2
+    url: str, output_path: Path, width: int, height: int, timeout: int = 30, delay: int = 2, fullpage: bool = True
 ) -> bool:
     """Capture screenshot using gowitness (single URL - fallback method)."""
     temp_dir = output_path.parent / ".gowitness_temp"
@@ -668,10 +850,12 @@ def capture_with_gowitness(
         str(delay),
         "--screenshot-format",
         "png",
-        "--screenshot-fullpage",
         "--write-none",
         "-q",
     ]
+
+    if fullpage:
+        cmd.insert(-2, "--screenshot-fullpage")
 
     if chrome_path:
         cmd.extend(["--chrome-path", chrome_path])
@@ -707,6 +891,7 @@ def capture_batch_with_gowitness(
     timeout: int = 30,
     delay: int = 2,
     threads: int = 4,
+    fullpage: bool = True,
 ) -> int:
     """
     Capture multiple screenshots using gowitness scan file (batch mode).
@@ -767,13 +952,15 @@ def capture_batch_with_gowitness(
         str(delay),
         "--screenshot-format",
         "png",
-        "--screenshot-fullpage",
         "--write-none",
         "--no-https",  # URLs are already http://
         "-t",
         str(threads),
         "-q",
     ]
+
+    if fullpage:
+        cmd.insert(-4, "--screenshot-fullpage")
 
     if chrome_path:
         cmd.extend(["--chrome-path", chrome_path])
@@ -924,8 +1111,6 @@ def convert_to_jpeg(screenshots_dir: Path, quality: int = 92, autocrop: bool = T
 
     return converted
 
-    return converted
-
 
 def check_zip_available() -> bool:
     """Check if zip command is available for CBZ creation."""
@@ -981,14 +1166,15 @@ def create_cbr(
     screenshots_dir: Path,
     output_path: Path,
     jpeg_quality: int = 92,
-    epub_type: str = "screenshot",
+    source_type: str = "screenshot",
     autocrop: bool = False,
 ) -> bool:
     """Create CBR (RAR) or CBZ (ZIP) file from images.
 
     Args:
         jpeg_quality: JPEG quality (1-100). Set to 0 to keep PNG format.
-        epub_type: Type of EPUB conversion ('extract' or 'screenshot'). Only converts to JPEG for 'screenshot'.
+        source_type: Type of source ('extract', 'screenshot', 'pdf').
+                     Converts to JPEG for 'screenshot' and 'pdf' modes.
         autocrop: If True, remove white borders from images (for InDesign EPUBs where viewport > image).
 
     Falls back to CBZ if RAR is not available.
@@ -999,9 +1185,8 @@ def create_cbr(
         print("❌ Error: Neither 'rar' nor 'zip' command found")
         return False
 
-    # Convert PNGs to JPEG only for screenshot mode (unless disabled)
-    # Extract mode already has high-quality images, no need to convert
-    if jpeg_quality > 0 and epub_type == "screenshot":
+    # Convert PNGs to JPEG (unless disabled)
+    if jpeg_quality > 0:
         png_count = len(list(screenshots_dir.glob("page_*.png")))
         if png_count > 0:
             autocrop_msg = " with autocrop" if autocrop else ""
@@ -1059,7 +1244,6 @@ def create_cbr(
 # Main Conversion
 # =============================================================================
 
-
 def convert_epub(
     epub_path: Path,
     output_dir: Optional[Path] = None,
@@ -1071,18 +1255,6 @@ def convert_epub(
 ) -> Tuple[Path, str, int, int, bool]:
     """
     Main conversion function.
-
-    Args:
-        epub_path: Path to EPUB file
-        output_dir: Output directory
-        mode: 'auto', 'extract', 'screenshot'
-        timeout: Timeout for gowitness
-        delay: Delay before screenshot
-        keep_extracted: Keep extracted EPUB files
-        threads: Number of parallel threads for screenshot mode
-
-    Returns:
-        Tuple of (screenshots_dir, epub_type, success_count, total_pages, needs_autocrop)
     """
     epub_path = Path(epub_path).resolve()
 
@@ -1112,6 +1284,35 @@ def convert_epub(
         # Determine EPUB type
         epub_type, vp_width, vp_height, scale_factor, needs_autocrop = determine_epub_type(html_files)
 
+        # --- SMART INDESIGN DETECTION ---
+        is_indesign = False
+        padding_height = 0
+
+        if epub_type == "screenshot":
+            # Scan first 5 pages for InDesign signatures
+            scan_limit = min(5, len(html_files))
+            for i in range(scan_limit):
+                try:
+                    sample_content = html_files[i].read_text(encoding="utf-8", errors="ignore")
+                    if "idGeneratedStyles" in sample_content or "_idContainer" in sample_content:
+                        is_indesign = True
+                        break
+                except Exception:
+                    continue
+
+            if is_indesign:
+                print("🕵️  Detected Adobe InDesign format: Applying layout fixes.")
+                print("   -> Disabled AutoCrop")
+                print("   -> Disabled FullPage Screenshot")
+                print("   -> Added 60px vertical padding")
+
+                # Fix 1: Disable autocrop to keep odd/even pages consistent
+                needs_autocrop = False
+
+                # Fix 2: Add padding to bottom to catch page numbers
+                padding_height = 60
+        # --------------------------------
+
         # Override if manual mode specified
         if mode == "extract":
             epub_type = "extract"
@@ -1120,7 +1321,8 @@ def convert_epub(
 
         # Calculate render size (scaled up for better quality)
         render_width = int(vp_width * scale_factor)
-        render_height = int(vp_height * scale_factor)
+        # CRITICAL FIX: Add padding_height here
+        render_height = int(vp_height * scale_factor) + padding_height
 
         # Print detected type
         type_descriptions = {
@@ -1197,7 +1399,12 @@ def convert_epub(
                             url_path = html_path.name
                         url = f"http://127.0.0.1:{port}/{url_path}"
 
-                        if capture_with_gowitness(url, output_path, vp_width, vp_height, timeout=15, delay=1):
+                        # Fix 3: Disable fullpage if InDesign
+                        if capture_with_gowitness(
+                            url, output_path, vp_width, vp_height,
+                            timeout=15, delay=1,
+                            fullpage=not is_indesign
+                        ):
                             success_count += 1
                             print(f"   ✅ {html_path.name} (screenshot)")
                         else:
@@ -1302,8 +1509,12 @@ def convert_epub(
 
                 # Batch capture with gowitness
                 print(f"📸 Capturing {total} pages in parallel (threads={threads})...")
+
+                # Fix 3: Disable fullpage if InDesign
                 success_count = capture_batch_with_gowitness(
-                    urls_with_paths, render_width, render_height, timeout, delay, threads=threads
+                    urls_with_paths, render_width, render_height,
+                    timeout, delay, threads=threads,
+                    fullpage=not is_indesign
                 )
 
                 # Check for any missing pages and retry individually
@@ -1311,7 +1522,12 @@ def convert_epub(
                 if missing:
                     print(f"\n🔄 Retrying {len(missing)} failed pages individually...")
                     for url, output_path in missing:
-                        if capture_with_gowitness(url, output_path, render_width, render_height, timeout, delay):
+                        # Fix 3: Disable fullpage if InDesign
+                        if capture_with_gowitness(
+                            url, output_path, render_width, render_height,
+                            timeout, delay,
+                            fullpage=not is_indesign
+                        ):
                             success_count += 1
 
                 # Final check for failed pages
@@ -1347,7 +1563,6 @@ def convert_epub(
     print(f"📸 Images saved to: {screenshots_dir}")
     return screenshots_dir, epub_type, success_count, total, needs_autocrop
 
-
 # =============================================================================
 # CLI
 # =============================================================================
@@ -1357,10 +1572,10 @@ def main():
     print_banner()
 
     parser = argparse.ArgumentParser(
-        description="Convert EPUB comic/manga files to images",
+        description="Convert EPUB/PDF comic/manga files to CBR/CBZ",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Modes:
+Modes (EPUB only):
   auto        Automatically detect best method (default)
   extract     Force direct image extraction
   screenshot  Force screenshot with gowitness
@@ -1370,16 +1585,19 @@ Examples:
   %(prog)s manga.epub --mode extract     # Force extraction
   %(prog)s manga.epub --mode screenshot  # Force screenshot
   %(prog)s manga.epub --cbr-only         # Create CBR, delete images
+  %(prog)s comic.pdf --cbr-only          # Convert PDF to CBR
         """,
     )
 
-    parser.add_argument("epub", type=Path, help="EPUB file to convert")
+    parser.add_argument("input", type=Path, nargs="?", help="EPUB or PDF file to convert")
     parser.add_argument("-o", "--output", type=Path, help="Output directory")
     parser.add_argument(
-        "-m", "--mode", choices=["auto", "extract", "screenshot"], default="auto", help="Conversion mode"
+        "-m", "--mode", choices=["auto", "extract", "screenshot"], default="auto", help="Conversion mode (EPUB only)"
     )
     parser.add_argument("--timeout", type=int, default=30, help="Timeout per page (screenshot mode)")
     parser.add_argument("--delay", type=int, default=2, help="Delay before screenshot")
+    parser.add_argument("--dpi", type=int, default=0, help="DPI for PDF rendering (0 = extract original images)")
+    parser.add_argument("--normalize", action="store_true", help="Normalize page sizes for PDF conversion")
     parser.add_argument("--keep-extracted", action="store_true", help="Keep extracted EPUB files")
     parser.add_argument("--cbr", action="store_true", help="Create CBR file")
     parser.add_argument("--cbr-only", action="store_true", help="Create CBR and delete images")
@@ -1400,28 +1618,62 @@ Examples:
                 print("✅ RAR available for CBR creation")
             else:
                 print("⚠️  RAR not available (CBR creation disabled)")
+        if check_pdf_available():
+            print("✅ PyMuPDF available for PDF conversion")
+        else:
+            print("⚠️  PyMuPDF not available (install with: pip install PyMuPDF)")
         sys.exit(0)
 
+    # Validate input file is provided
+    if not args.input:
+        parser.error("the following arguments are required: input")
+
     start_time = time.time()
+    input_file = args.input.resolve()
+    file_ext = input_file.suffix.lower()
 
     try:
-        screenshots_dir, epub_type, success_count, total_pages, needs_autocrop = convert_epub(
-            epub_path=args.epub,
-            output_dir=args.output,
-            mode=args.mode,
-            timeout=args.timeout,
-            delay=args.delay,
-            keep_extracted=args.keep_extracted,
-            threads=args.threads,
-        )
+        # Determine file type and process accordingly
+        if file_ext == ".pdf":
+            # PDF conversion
+            if not check_pdf_available():
+                print("❌ Error: PyMuPDF not installed")
+                print("   Install with: pip install PyMuPDF")
+                sys.exit(1)
+
+            screenshots_dir, success_count, total_pages = convert_pdf_to_images(
+                pdf_path=input_file,
+                output_dir=args.output or input_file.parent / f"{input_file.stem}_images",
+                dpi=args.dpi,
+                jpeg_quality=args.jpeg_quality,
+                normalize=args.normalize,
+            )
+            file_type = "pdf"
+            needs_autocrop = False
+
+        elif file_ext == ".epub":
+            # EPUB conversion
+            screenshots_dir, file_type, success_count, total_pages, needs_autocrop = convert_epub(
+                epub_path=input_file,
+                output_dir=args.output,
+                mode=args.mode,
+                timeout=args.timeout,
+                delay=args.delay,
+                keep_extracted=args.keep_extracted,
+                threads=args.threads,
+            )
+        else:
+            print(f"❌ Error: Unsupported file format: {file_ext}")
+            print("   Supported formats: .epub, .pdf")
+            sys.exit(1)
 
         # Determine if conversion is complete or incomplete
         is_complete = success_count == total_pages
 
         # Create CBR if requested
         if args.cbr or args.cbr_only:
-            # Create 'converted' directory next to the EPUB file (use absolute path)
-            converted_dir = args.epub.resolve().parent / "converted"
+            # Create 'converted' directory next to the input file (use absolute path)
+            converted_dir = input_file.parent / "converted"
             converted_dir.mkdir(parents=True, exist_ok=True)
 
             # Incomplete conversions go to 'review' subfolder
@@ -1432,21 +1684,22 @@ Examples:
             else:
                 output_subdir = converted_dir
 
-            cbr_path = output_subdir / f"{args.epub.stem}.cbr"
+            cbr_path = output_subdir / f"{input_file.stem}.cbr"
             jpeg_quality = 0 if args.no_jpeg else args.jpeg_quality
-            if create_cbr(screenshots_dir, cbr_path, jpeg_quality, epub_type, autocrop=needs_autocrop):
+            if create_cbr(screenshots_dir, cbr_path, jpeg_quality, file_type, autocrop=needs_autocrop):
                 # Delete the entire _images directory after creating CBR
-                images_dir = screenshots_dir.parent
-                if images_dir.exists():
-                    shutil.rmtree(images_dir)
-                    print("🗑️  Deleted working directory")
+                if args.cbr_only:
+                    images_dir = screenshots_dir.parent
+                    if images_dir.exists():
+                        shutil.rmtree(images_dir)
+                        print("🗑️  Deleted working directory")
 
             # Log incomplete conversions to error log
             if not is_complete:
                 log_file = converted_dir / "conversion_errors.log"
                 timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
                 log_entry = (
-                    f"[{timestamp}] {args.epub.name}: "
+                    f"[{timestamp}] {input_file.name}: "
                     f"{success_count}/{total_pages} pages converted "
                     f"({total_pages - success_count} missing)\n"
                 )

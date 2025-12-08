@@ -6,14 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-
 ### Added
+- PDF to CBR conversion support using PyMuPDF
+- New `--dpi` option for PDF rendering quality (default: 200)
+- PyMuPDF dependency for PDF page extraction
+
+### Changed
+- Updated CLI to accept both EPUB and PDF files
+- Banner and documentation updated to reflect EPUB/PDF support
+### Added
+
 ## [v0.1.0] - 2025-12-06
 
 ### Changed
 - fix: CSS scaling for InDesign-exported EPUBs [MINOR] (#3) (aa1197d)
 - docs: Update CHANGELOG.md for v0.0.5 [skip ci] (5992a3c)
-
 
 ## [v0.0.5] - 2025-12-06
 
