@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+## [v0.2.0] - 2025-12-08
+
+### Changed
+- feat: Add PDF support for conversion to CBR and update documentation [MINOR] (#4) (891765f)
+- docs: Update CHANGELOG.md for v0.1.0 [skip ci] (d7a4aff)
+
+
 - PDF to CBR conversion support using PyMuPDF
 - New `--dpi` option for PDF rendering quality (default: 200)
 - PyMuPDF dependency for PDF page extraction
@@ -60,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--threads` - Parallel screenshot processing
 - `--timeout` / `--delay` - Screenshot timing control
 
-[Unreleased]: https://github.com/romancin/epub2cbr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/romancin/epub2cbr/compare/v0.2.0...HEAD
+[v0.2.0]: https://github.com/romancin/epub2cbr/releases/tag/v0.2.0
 [v0.1.0]: https://github.com/romancin/epub2cbr/releases/tag/v0.1.0
 [v0.0.5]: https://github.com/romancin/epub2cbr/releases/tag/v0.0.5
 [v0.0.1]: https://github.com/romancin/epub2cbr/releases/tag/v0.0.1
