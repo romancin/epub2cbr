@@ -687,7 +687,6 @@ def scale_css_file(css_path: Path, output_path: Path, scale_factor: float) -> No
 
     output_path.write_text(content, encoding="utf-8")
 
-
 def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) -> Path:
     """
     Create a scaled version of the HTML file for high-resolution screenshots.
@@ -700,9 +699,14 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
     if scale_factor <= 1.0:
         return html_path
 
+    # 1. READ THE FILE FIRST (This line must be before using 'content')
     content = html_path.read_text(encoding="utf-8", errors="ignore")
 
-    # Scale viewport meta tag
+    # 2. APPLY INDESIGN FIX (Force visible overflow)
+    content = content.replace("overflow:hidden", "overflow:visible")
+    content = content.replace("overflow: hidden", "overflow: visible")
+
+    # 3. Scale viewport meta tag
     def scale_viewport(match):
         width = int(int(match.group(1)) * scale_factor)
         height = int(int(match.group(2)) * scale_factor)
@@ -765,17 +769,13 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
 
     content = re.sub(r"<img[^>]+>", scale_img, content)
 
-    # Scale TextContainer transform scale (this is the key!)
-    # The original scale is something like scale(0.031267)
-    # We need to keep the SAME visual scale, so multiply by scale_factor
-    # Handle both "transform:scale(X)" and "transform: ... scale(X)" formats
-    # Only scale single-parameter scale(), not scale(x,y) which might be for flipping
+    # Scale TextContainer transform scale
     def scale_transform(match):
         original_scale = float(match.group(1))
         new_scale = original_scale * scale_factor
         return f"scale({new_scale:.6f})"
 
-    # Match scale() with single parameter (not followed by comma and another number)
+    # Match scale() with single parameter
     content = re.sub(r"scale\(([0-9.]+)\)(?!\s*,)", scale_transform, content)
 
     # Scale translate values in inline transform styles
@@ -786,24 +786,11 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
 
     content = re.sub(r"translate\((-?\d+\.?\d*)px,(-?\d+\.?\d*)px\)", scale_translate, content)
 
-    # NOTE: We do NOT scale div styles with width/height here because:
-    # 1. Divs that contain transformed content (with scale()) use their dimensions
-    #    as the internal coordinate space, which gets scaled by the transform.
-    # 2. Divs positioned by external CSS (#_idContainer* rules) are scaled by
-    #    the scale_css_file function.
-    # Only the viewport, body, and CSS file dimensions need scaling.
-
-    # NOTE: We do NOT scale span positions because spans with absolute positioning
-    # are typically inside transformed containers (with scale()). The transform
-    # already handles the visual scaling, so span positions should remain in their
-    # original coordinate space.
-
     # Write scaled HTML
     output_path = output_dir / html_path.name
     output_path.write_text(content, encoding="utf-8")
 
     return output_path
-
 
 def start_http_server(directory: Path, port: int):
     """Start HTTP server for the directory."""
@@ -815,7 +802,7 @@ def start_http_server(directory: Path, port: int):
 
 
 def capture_with_gowitness(
-    url: str, output_path: Path, width: int, height: int, timeout: int = 30, delay: int = 2
+    url: str, output_path: Path, width: int, height: int, timeout: int = 30, delay: int = 2, fullpage: bool = True
 ) -> bool:
     """Capture screenshot using gowitness (single URL - fallback method)."""
     temp_dir = output_path.parent / ".gowitness_temp"
@@ -849,10 +836,12 @@ def capture_with_gowitness(
         str(delay),
         "--screenshot-format",
         "png",
-        "--screenshot-fullpage",
         "--write-none",
         "-q",
     ]
+
+    if fullpage:
+        cmd.insert(-2, "--screenshot-fullpage")
 
     if chrome_path:
         cmd.extend(["--chrome-path", chrome_path])
@@ -888,6 +877,7 @@ def capture_batch_with_gowitness(
     timeout: int = 30,
     delay: int = 2,
     threads: int = 4,
+    fullpage: bool = True,
 ) -> int:
     """
     Capture multiple screenshots using gowitness scan file (batch mode).
@@ -948,13 +938,15 @@ def capture_batch_with_gowitness(
         str(delay),
         "--screenshot-format",
         "png",
-        "--screenshot-fullpage",
         "--write-none",
         "--no-https",  # URLs are already http://
         "-t",
         str(threads),
         "-q",
     ]
+
+    if fullpage:
+        cmd.insert(-4, "--screenshot-fullpage")
 
     if chrome_path:
         cmd.extend(["--chrome-path", chrome_path])
@@ -1238,7 +1230,6 @@ def create_cbr(
 # Main Conversion
 # =============================================================================
 
-
 def convert_epub(
     epub_path: Path,
     output_dir: Optional[Path] = None,
@@ -1250,18 +1241,6 @@ def convert_epub(
 ) -> Tuple[Path, str, int, int, bool]:
     """
     Main conversion function.
-
-    Args:
-        epub_path: Path to EPUB file
-        output_dir: Output directory
-        mode: 'auto', 'extract', 'screenshot'
-        timeout: Timeout for gowitness
-        delay: Delay before screenshot
-        keep_extracted: Keep extracted EPUB files
-        threads: Number of parallel threads for screenshot mode
-
-    Returns:
-        Tuple of (screenshots_dir, epub_type, success_count, total_pages, needs_autocrop)
     """
     epub_path = Path(epub_path).resolve()
 
@@ -1291,6 +1270,35 @@ def convert_epub(
         # Determine EPUB type
         epub_type, vp_width, vp_height, scale_factor, needs_autocrop = determine_epub_type(html_files)
 
+        # --- SMART INDESIGN DETECTION ---
+        is_indesign = False
+        padding_height = 0
+
+        if epub_type == "screenshot":
+            # Scan first 5 pages for InDesign signatures
+            scan_limit = min(5, len(html_files))
+            for i in range(scan_limit):
+                try:
+                    sample_content = html_files[i].read_text(encoding="utf-8", errors="ignore")
+                    if "idGeneratedStyles" in sample_content or "_idContainer" in sample_content:
+                        is_indesign = True
+                        break
+                except Exception:
+                    continue
+
+            if is_indesign:
+                print("🕵️  Detected Adobe InDesign format: Applying layout fixes.")
+                print("   -> Disabled AutoCrop")
+                print("   -> Disabled FullPage Screenshot")
+                print("   -> Added 60px vertical padding")
+
+                # Fix 1: Disable autocrop to keep odd/even pages consistent
+                needs_autocrop = False
+
+                # Fix 2: Add padding to bottom to catch page numbers
+                padding_height = 60
+        # --------------------------------
+
         # Override if manual mode specified
         if mode == "extract":
             epub_type = "extract"
@@ -1299,7 +1307,8 @@ def convert_epub(
 
         # Calculate render size (scaled up for better quality)
         render_width = int(vp_width * scale_factor)
-        render_height = int(vp_height * scale_factor)
+        # CRITICAL FIX: Add padding_height here
+        render_height = int(vp_height * scale_factor) + padding_height
 
         # Print detected type
         type_descriptions = {
@@ -1376,7 +1385,12 @@ def convert_epub(
                             url_path = html_path.name
                         url = f"http://127.0.0.1:{port}/{url_path}"
 
-                        if capture_with_gowitness(url, output_path, vp_width, vp_height, timeout=15, delay=1):
+                        # Fix 3: Disable fullpage if InDesign
+                        if capture_with_gowitness(
+                            url, output_path, vp_width, vp_height,
+                            timeout=15, delay=1,
+                            fullpage=not is_indesign
+                        ):
                             success_count += 1
                             print(f"   ✅ {html_path.name} (screenshot)")
                         else:
@@ -1481,8 +1495,12 @@ def convert_epub(
 
                 # Batch capture with gowitness
                 print(f"📸 Capturing {total} pages in parallel (threads={threads})...")
+
+                # Fix 3: Disable fullpage if InDesign
                 success_count = capture_batch_with_gowitness(
-                    urls_with_paths, render_width, render_height, timeout, delay, threads=threads
+                    urls_with_paths, render_width, render_height,
+                    timeout, delay, threads=threads,
+                    fullpage=not is_indesign
                 )
 
                 # Check for any missing pages and retry individually
@@ -1490,7 +1508,12 @@ def convert_epub(
                 if missing:
                     print(f"\n🔄 Retrying {len(missing)} failed pages individually...")
                     for url, output_path in missing:
-                        if capture_with_gowitness(url, output_path, render_width, render_height, timeout, delay):
+                        # Fix 3: Disable fullpage if InDesign
+                        if capture_with_gowitness(
+                            url, output_path, render_width, render_height,
+                            timeout, delay,
+                            fullpage=not is_indesign
+                        ):
                             success_count += 1
 
                 # Final check for failed pages
@@ -1525,7 +1548,6 @@ def convert_epub(
 
     print(f"📸 Images saved to: {screenshots_dir}")
     return screenshots_dir, epub_type, success_count, total, needs_autocrop
-
 
 # =============================================================================
 # CLI
