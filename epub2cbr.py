@@ -105,7 +105,6 @@ def check_pdf_available() -> bool:
     """Check if PyMuPDF is available for PDF processing."""
     return fitz is not None
 
-
 def convert_pdf_to_images(
     pdf_path: Path,
     output_dir: Path,
@@ -115,19 +114,8 @@ def convert_pdf_to_images(
 ) -> Tuple[Path, int, int]:
     """
     Convert PDF pages to images.
-
-    Renders pages at the optimal DPI to match embedded image resolution.
-    This ensures masks and layers are properly composited.
-
-    Args:
-        pdf_path: Path to the PDF file
-        output_dir: Directory to save images
-        dpi: Resolution for rendering (0 = auto-detect from embedded images)
-        jpeg_quality: JPEG quality for output (default 92)
-        normalize: If True, find the smallest page and resize all larger pages down to fit.
-
-    Returns:
-        Tuple of (screenshots_dir, success_count, total_pages)
+    If normalize=True, it finds the smallest page dimensions and
+    center-crops larger pages to match exactly (removing margins).
     """
     if fitz is None:
         raise RuntimeError("PyMuPDF not installed. Install with: pip install PyMuPDF")
@@ -167,6 +155,8 @@ def convert_pdf_to_images(
         print("📏 Analyzing page sizes for normalization...")
         min_area = float("inf")
 
+        # First pass: Find the smallest page area to act as the target
+        # Using the smallest page ensures we crop larger ones rather than upscaling (blurring) smaller ones
         for page_num in range(total_pages):
             page = pdf[page_num]
             rect = page.rect
@@ -181,10 +171,10 @@ def convert_pdf_to_images(
 
         if target_width > 0:
             print(
-                f"📏 Normalizing all larger pages to fit within: {target_width}x{target_height} pixels (smallest page size)"  # noqa: E501
+                f"📏 Normalizing all pages to strict size: {target_width}x{target_height} pixels (Center Crop)"
             )
         else:
-            normalize = False  # Should not happen if there are pages
+            normalize = False
 
     success_count = 0
 
@@ -196,17 +186,42 @@ def convert_pdf_to_images(
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             png_path = screenshots_dir / f"page_{page_num + 1:04d}.png"
 
-            current_width = pix.width
-            current_height = pix.height
-
-            if normalize and (current_width > target_width or current_height > target_height):
+            # Check if processing is needed
+            if normalize and (pix.width != target_width or pix.height != target_height):
+                # Convert to PIL Image
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-                # Resize the image to be at most the target dimensions, preserving aspect ratio
-                img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
+                # --- Aspect Fill + Center Crop Logic ---
 
+                # 1. Calculate scale factors for both dimensions
+                width_ratio = target_width / img.width
+                height_ratio = target_height / img.height
+
+                # 2. Use the LARGER ratio to ensure the image fills the target completely
+                scale = max(width_ratio, height_ratio)
+
+                # 3. Calculate new dimensions (will be >= target dimensions)
+                new_width = int(round(img.width * scale))
+                new_height = int(round(img.height * scale))
+
+                # Safety check to prevent rounding errors making it 1px too small
+                new_width = max(new_width, target_width)
+                new_height = max(new_height, target_height)
+
+                # 4. Resize the image
+                if scale != 1.0:
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                # 5. Center Crop to exact target size
+                left = (new_width - target_width) // 2
+                top = (new_height - target_height) // 2
+                right = left + target_width
+                bottom = top + target_height
+
+                img = img.crop((left, top, right, bottom))
                 img.save(str(png_path))
             else:
+                # Save directly if no normalization needed or size already matches exactly
                 pix.save(str(png_path))
 
             success_count += 1
@@ -221,7 +236,6 @@ def convert_pdf_to_images(
     print(f"📸 Images saved to: {screenshots_dir}")
 
     return screenshots_dir, success_count, total_pages
-
 
 def _detect_optimal_dpi(pdf) -> int:
     """
