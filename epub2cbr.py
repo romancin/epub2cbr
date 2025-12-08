@@ -111,6 +111,7 @@ def convert_pdf_to_images(
     output_dir: Path,
     dpi: int = 0,
     jpeg_quality: int = 92,
+    normalize: bool = False,
 ) -> Tuple[Path, int, int]:
     """
     Convert PDF pages to images.
@@ -123,12 +124,18 @@ def convert_pdf_to_images(
         output_dir: Directory to save images
         dpi: Resolution for rendering (0 = auto-detect from embedded images)
         jpeg_quality: JPEG quality for output (default 92)
+        normalize: If True, find the smallest page and resize all larger pages down to fit.
 
     Returns:
         Tuple of (screenshots_dir, success_count, total_pages)
     """
     if fitz is None:
         raise RuntimeError("PyMuPDF not installed. Install with: pip install PyMuPDF")
+
+    if Image is None and normalize:
+        raise RuntimeError(
+            "Pillow not installed, which is required for normalization. Install with: pip install Pillow"
+        )
 
     pdf_path = Path(pdf_path).resolve()
     if not pdf_path.exists():
@@ -155,6 +162,30 @@ def convert_pdf_to_images(
     zoom = dpi / 72.0
     matrix = fitz.Matrix(zoom, zoom)
 
+    target_width, target_height = 0, 0
+    if normalize and total_pages > 0:
+        print("📏 Analyzing page sizes for normalization...")
+        min_area = float("inf")
+
+        for page_num in range(total_pages):
+            page = pdf[page_num]
+            rect = page.rect
+            width = int(rect.width * zoom)
+            height = int(rect.height * zoom)
+
+            area = width * height
+            if area < min_area:
+                min_area = area
+                target_width = width
+                target_height = height
+
+        if target_width > 0:
+            print(
+                f"📏 Normalizing all larger pages to fit within: {target_width}x{target_height} pixels (smallest page size)"  # noqa: E501
+            )
+        else:
+            normalize = False  # Should not happen if there are pages
+
     success_count = 0
 
     for page_num in range(total_pages):
@@ -162,9 +193,22 @@ def convert_pdf_to_images(
 
         try:
             page = pdf[page_num]
-            pix = page.get_pixmap(matrix=matrix)
+            pix = page.get_pixmap(matrix=matrix, alpha=False)
             png_path = screenshots_dir / f"page_{page_num + 1:04d}.png"
-            pix.save(str(png_path))
+
+            current_width = pix.width
+            current_height = pix.height
+
+            if normalize and (current_width > target_width or current_height > target_height):
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+                # Resize the image to be at most the target dimensions, preserving aspect ratio
+                img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
+
+                img.save(str(png_path))
+            else:
+                pix.save(str(png_path))
+
             success_count += 1
 
         except Exception as e:
@@ -1517,6 +1561,7 @@ Examples:
     parser.add_argument("--timeout", type=int, default=30, help="Timeout per page (screenshot mode)")
     parser.add_argument("--delay", type=int, default=2, help="Delay before screenshot")
     parser.add_argument("--dpi", type=int, default=0, help="DPI for PDF rendering (0 = extract original images)")
+    parser.add_argument("--normalize", action="store_true", help="Normalize page sizes for PDF conversion")
     parser.add_argument("--keep-extracted", action="store_true", help="Keep extracted EPUB files")
     parser.add_argument("--cbr", action="store_true", help="Create CBR file")
     parser.add_argument("--cbr-only", action="store_true", help="Create CBR and delete images")
@@ -1565,6 +1610,7 @@ Examples:
                 output_dir=args.output or input_file.parent / f"{input_file.stem}_images",
                 dpi=args.dpi,
                 jpeg_quality=args.jpeg_quality,
+                normalize=args.normalize,
             )
             file_type = "pdf"
             needs_autocrop = False
