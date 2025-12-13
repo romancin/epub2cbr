@@ -75,6 +75,13 @@ brew install rar  # macOS (or: sudo apt install rar on Linux/WSL)
 ## Usage
 
 ```bash
+
+# Disable automatic autocropping of white borders
+You can disable the automatic autocrop step (useful if pages get different sizes after trimming):
+
+```bash
+./epub2cbr.py comic.epub --cbr-only --no-autocrop
+```
 # Basic EPUB conversion (auto-detects best method)
 ./epub2cbr.py comic.epub --cbr-only
 
@@ -108,6 +115,7 @@ for f in *.epub *.pdf; do ./epub2cbr.py "$f" --cbr-only; done
 | `--keep-extracted` | Keep extracted EPUB files |
 | `--timeout N` | Screenshot timeout in seconds |
 | `--check-deps` | Verify all dependencies |
+| `--no-autocrop` | Disable automatic cropping of white borders before JPEG conversion |
 
 ## How it works
 

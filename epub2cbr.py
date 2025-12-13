@@ -1603,6 +1603,7 @@ Examples:
     parser.add_argument("--cbr-only", action="store_true", help="Create CBR and delete images")
     parser.add_argument("--jpeg-quality", type=int, default=92, help="JPEG quality for CBR (1-100, default: 92)")
     parser.add_argument("--no-jpeg", action="store_true", help="Keep PNG format, don't convert to JPEG")
+    parser.add_argument("--no-autocrop", action="store_true", help="Disable auto-cropping of white borders before JPEG conversion")
     parser.add_argument(
         "--threads", type=int, default=4, help="Number of parallel threads for screenshot mode (default: 4)"
     )
@@ -1686,7 +1687,9 @@ Examples:
 
             cbr_path = output_subdir / f"{input_file.stem}.cbr"
             jpeg_quality = 0 if args.no_jpeg else args.jpeg_quality
-            if create_cbr(screenshots_dir, cbr_path, jpeg_quality, file_type, autocrop=needs_autocrop):
+            # If user explicitly requested no_autocrop, override detected autocrop
+            autocrop_flag = False if args.no_autocrop else needs_autocrop
+            if create_cbr(screenshots_dir, cbr_path, jpeg_quality, file_type, autocrop=autocrop_flag):
                 # Delete the entire _images directory after creating CBR
                 if args.cbr_only:
                     images_dir = screenshots_dir.parent
