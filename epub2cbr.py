@@ -701,24 +701,27 @@ def scale_css_file(css_path: Path, output_path: Path, scale_factor: float) -> No
 
     output_path.write_text(content, encoding="utf-8")
 
-def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) -> Path:
+def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float, skip_css_scaling: bool = False) -> Path:
     """
     Create a scaled version of the HTML file for high-resolution screenshots.
 
     This modifies:
     1. viewport meta tag
     2. body dimensions
-    3. All absolute pixel values in styles
+    3. All absolute pixel values in styles (unless skip_css_scaling=True)
     """
     if scale_factor <= 1.0:
         return html_path
 
-    # 1. READ THE FILE FIRST (This line must be before using 'content')
+    # 1. READ THE FILE FIRST
     content = html_path.read_text(encoding="utf-8", errors="ignore")
 
-    # 2. APPLY INDESIGN FIX (Force visible overflow)
-    content = content.replace("overflow:hidden", "overflow:visible")
-    content = content.replace("overflow: hidden", "overflow: visible")
+    # 2. APPLY INDESIGN FIX (Force visible overflow) - ONLY IF NOT InDesign (which uses skip_css_scaling)
+    # The user reported "worse than before", likely seeing cutting edges or overlapping pages.
+    # InDesign files have precise layout, so overflow:hidden is usually correct.
+    if not skip_css_scaling:
+        content = content.replace("overflow:hidden", "overflow:visible")
+        content = content.replace("overflow: hidden", "overflow: visible")
 
     # 3. Scale viewport meta tag
     def scale_viewport(match):
@@ -748,18 +751,27 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
 
     content = re.sub(r'class="PageContainer"\s+id="Page"\s+style="([^"]*)"', scale_page_container, content)
 
-    # Scale ImageContainer styles in <style> block
+    # Scale ImageContainer/TextContainer/etc styles in <style> block
+    # ALWAYS DO THIS - InDesign needs ImageContainer scaling
     def scale_style_block(match):
         style_content = match.group(1)
-        # Scale all pixel values
+        # Scale all pixel values - relax regex to handle whitespace
         style_content = re.sub(
-            r"(bottom|right|width|height):(-?\d+\.?\d*)px",
+            r"(bottom|right|width|height)\s*:\s*(-?\d+\.?\d*)px",
             lambda m: f"{m.group(1)}:{float(m.group(2)) * scale_factor:.2f}px",
             style_content,
+            flags=re.IGNORECASE,
+        )
+        # Also scale top/left for ImageContainers
+        style_content = re.sub(
+            r"(top|left)\s*:\s*(-?\d+\.?\d*)px",
+            lambda m: f"{m.group(1)}:{float(m.group(2)) * scale_factor:.2f}px",
+            style_content,
+            flags=re.IGNORECASE,
         )
         return f"<style>{style_content}</style>"
 
-    content = re.sub(r"<style[^>]*>(.*?)</style>", scale_style_block, content, flags=re.DOTALL)
+    content = re.sub(r"<style[^>]*>(.*?)</style>", scale_style_block, content, flags=re.DOTALL | re.IGNORECASE)
 
     # Scale inline img dimensions (both attribute and style)
     def scale_img(match):
@@ -793,12 +805,36 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float) 
     content = re.sub(r"scale\(([0-9.]+)\)(?!\s*,)", scale_transform, content)
 
     # Scale translate values in inline transform styles
+    # Usually safe to always do this as standard transforms are unit-aware?
+    # Actually, keep it conditional if in doubt, but usually transforms are scaled.
+    # The bug was about pixel values inside the transformed container.
     def scale_translate(match):
         x = float(match.group(1)) * scale_factor
         y = float(match.group(2)) * scale_factor
         return f"translate({x:.2f}px,{y:.2f}px)"
 
     content = re.sub(r"translate\((-?\d+\.?\d*)px,(-?\d+\.?\d*)px\)", scale_translate, content)
+
+    # CRITICAL: Scale inline styles on SPAN/DIV elements?
+    # If using skip_css_scaling (InDesign), we MUST NOT scale spans because they use huge coordinates inside a scaled container.
+    # But we MIGHT need to scale other divs?
+    # For now, let's keep the behavior:
+    # If NOT skip_css_scaling: find all inline style="..." and scale px values.
+    # If skip_css_scaling: DO NOTHING to other inline styles.
+
+    if not skip_css_scaling:
+         # Scale generic inline styles (top, left, etc) on ANY element
+         # This was the logic causing the double scaling on spans
+        def scale_inline_style(match):
+            style_content = match.group(1)
+            style_content = re.sub(
+                r"(bottom|right|width|height|top|left):(-?\d+\.?\d*)px",
+                lambda m: f"{m.group(1)}:{float(m.group(2)) * scale_factor:.2f}px",
+                style_content,
+            )
+            return f'style="{style_content}"'
+
+        content = re.sub(r'style="([^"]*)"', scale_inline_style, content)
 
     # Write scaled HTML
     output_path = output_dir / html_path.name
@@ -1252,6 +1288,7 @@ def convert_epub(
     delay: int = 1,
     keep_extracted: bool = False,
     threads: int = 4,
+    force_indesign: bool = False,
 ) -> Tuple[Path, str, int, int, bool]:
     """
     Main conversion function.
@@ -1285,25 +1322,29 @@ def convert_epub(
         epub_type, vp_width, vp_height, scale_factor, needs_autocrop = determine_epub_type(html_files)
 
         # --- SMART INDESIGN DETECTION ---
-        is_indesign = False
+        is_indesign = force_indesign
         padding_height = 0
 
-        if epub_type == "screenshot":
+        if epub_type == "screenshot" and not is_indesign:
             # Scan first 5 pages for InDesign signatures
             scan_limit = min(5, len(html_files))
             for i in range(scan_limit):
                 try:
                     sample_content = html_files[i].read_text(encoding="utf-8", errors="ignore")
-                    if "idGeneratedStyles" in sample_content or "_idContainer" in sample_content:
+                    if (
+                        "idGeneratedStyles" in sample_content
+                        or "_idContainer" in sample_content
+                        or ("TextContainer" in sample_content and "transform:scale" in sample_content.replace(" ", ""))
+                    ):
                         is_indesign = True
                         break
                 except Exception:
                     continue
 
-            if is_indesign:
+        if is_indesign:
                 print("🕵️  Detected Adobe InDesign format: Applying layout fixes.")
                 print("   -> Disabled AutoCrop")
-                print("   -> Disabled FullPage Screenshot")
+                print("   -> Enabled FullPage Screenshot (to prevent clipping)")
                 print("   -> Added 60px vertical padding")
 
                 # Fix 1: Disable autocrop to keep odd/even pages consistent
@@ -1453,11 +1494,11 @@ def convert_epub(
                         dst.mkdir(parents=True, exist_ok=True)
                         for item in src.iterdir():
                             if item.is_file():
-                                if item.suffix.lower() == ".css":
-                                    # Scale CSS files
+                                if item.suffix.lower() == ".css" and not is_indesign:
+                                    # Scale CSS files (only if not InDesign, which has pixel-perfect layout)
                                     scale_css_file(item, dst / item.name, scale_factor)
                                 else:
-                                    # Copy other files (fonts, etc.)
+                                    # Copy other files (fonts, etc.) - or CSS if InDesign
                                     shutil.copy(item, dst / item.name)
                             elif item.is_dir():
                                 shutil.copytree(item, dst / item.name, dirs_exist_ok=True)
@@ -1492,10 +1533,14 @@ def convert_epub(
                     if scaled_dir and scale_factor > 1.0:
                         # Put scaled HTML in the correct subdirectory
                         if html_subdir != Path("."):
-                            scaled_html = prepare_scaled_html(html_path, scaled_dir / html_subdir, scale_factor)
+                            scaled_html = prepare_scaled_html(
+                                html_path, scaled_dir / html_subdir, scale_factor, skip_css_scaling=is_indesign
+                            )
                             url_path = str(html_subdir / scaled_html.name)
                         else:
-                            scaled_html = prepare_scaled_html(html_path, scaled_dir, scale_factor)
+                            scaled_html = prepare_scaled_html(
+                                html_path, scaled_dir, scale_factor, skip_css_scaling=is_indesign
+                            )
                             url_path = scaled_html.name
                     else:
                         try:
@@ -1510,11 +1555,11 @@ def convert_epub(
                 # Batch capture with gowitness
                 print(f"📸 Capturing {total} pages in parallel (threads={threads})...")
 
-                # Fix 3: Disable fullpage if InDesign
+                # Fix 3: Enable fullpage for InDesign too (prevents clipping)
                 success_count = capture_batch_with_gowitness(
                     urls_with_paths, render_width, render_height,
                     timeout, delay, threads=threads,
-                    fullpage=not is_indesign
+                    fullpage=True if is_indesign else (epub_type == "screenshot")
                 )
 
                 # Check for any missing pages and retry individually
@@ -1522,11 +1567,11 @@ def convert_epub(
                 if missing:
                     print(f"\n🔄 Retrying {len(missing)} failed pages individually...")
                     for url, output_path in missing:
-                        # Fix 3: Disable fullpage if InDesign
+                        # Fix 3: Enable fullpage for InDesign too
                         if capture_with_gowitness(
                             url, output_path, render_width, render_height,
                             timeout, delay,
-                            fullpage=not is_indesign
+                            fullpage=True if is_indesign else (epub_type == "screenshot")
                         ):
                             success_count += 1
 
@@ -1607,6 +1652,7 @@ Examples:
     parser.add_argument(
         "--threads", type=int, default=4, help="Number of parallel threads for screenshot mode (default: 4)"
     )
+    parser.add_argument("--indesign", action="store_true", help="Force InDesign layout mode (disables CSS pixel scaling)")
     parser.add_argument("--check-deps", action="store_true", help="Check dependencies")
 
     args = parser.parse_args()
@@ -1662,6 +1708,7 @@ Examples:
                 delay=args.delay,
                 keep_extracted=args.keep_extracted,
                 threads=args.threads,
+                force_indesign=args.indesign,
             )
         else:
             print(f"❌ Error: Unsupported file format: {file_ext}")

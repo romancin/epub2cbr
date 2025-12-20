@@ -116,6 +116,7 @@ for f in *.epub *.pdf; do ./epub2cbr.py "$f" --cbr-only; done
 | `--timeout N` | Screenshot timeout in seconds |
 | `--check-deps` | Verify all dependencies |
 | `--no-autocrop` | Disable automatic cropping of white borders before JPEG conversion |
+| `--indesign` | Force InDesign EPUB handling (disable CSS pixel scaling) |
 
 ## How it works
 
