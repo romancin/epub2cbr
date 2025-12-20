@@ -105,6 +105,7 @@ def check_pdf_available() -> bool:
     """Check if PyMuPDF is available for PDF processing."""
     return fitz is not None
 
+
 def convert_pdf_to_images(
     pdf_path: Path,
     output_dir: Path,
@@ -170,9 +171,7 @@ def convert_pdf_to_images(
                 target_height = height
 
         if target_width > 0:
-            print(
-                f"📏 Normalizing all pages to strict size: {target_width}x{target_height} pixels (Center Crop)"
-            )
+            print(f"📏 Normalizing all pages to strict size: {target_width}x{target_height} pixels (Center Crop)")
         else:
             normalize = False
 
@@ -236,6 +235,7 @@ def convert_pdf_to_images(
     print(f"📸 Images saved to: {screenshots_dir}")
 
     return screenshots_dir, success_count, total_pages
+
 
 def _detect_optimal_dpi(pdf) -> int:
     """
@@ -701,6 +701,7 @@ def scale_css_file(css_path: Path, output_path: Path, scale_factor: float) -> No
 
     output_path.write_text(content, encoding="utf-8")
 
+
 def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float, skip_css_scaling: bool = False) -> Path:
     """
     Create a scaled version of the HTML file for high-resolution screenshots.
@@ -816,15 +817,16 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float, 
     content = re.sub(r"translate\((-?\d+\.?\d*)px,(-?\d+\.?\d*)px\)", scale_translate, content)
 
     # CRITICAL: Scale inline styles on SPAN/DIV elements?
-    # If using skip_css_scaling (InDesign), we MUST NOT scale spans because they use huge coordinates inside a scaled container.
+    # If using skip_css_scaling (InDesign), we MUST NOT scale spans because
+    # they use huge coordinates inside a scaled container.
     # But we MIGHT need to scale other divs?
     # For now, let's keep the behavior:
     # If NOT skip_css_scaling: find all inline style="..." and scale px values.
     # If skip_css_scaling: DO NOTHING to other inline styles.
 
     if not skip_css_scaling:
-         # Scale generic inline styles (top, left, etc) on ANY element
-         # This was the logic causing the double scaling on spans
+        # Scale generic inline styles (top, left, etc) on ANY element
+        # This was the logic causing the double scaling on spans
         def scale_inline_style(match):
             style_content = match.group(1)
             style_content = re.sub(
@@ -841,6 +843,7 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float, 
     output_path.write_text(content, encoding="utf-8")
 
     return output_path
+
 
 def start_http_server(directory: Path, port: int):
     """Start HTTP server for the directory."""
@@ -1280,6 +1283,7 @@ def create_cbr(
 # Main Conversion
 # =============================================================================
 
+
 def convert_epub(
     epub_path: Path,
     output_dir: Optional[Path] = None,
@@ -1342,16 +1346,16 @@ def convert_epub(
                     continue
 
         if is_indesign:
-                print("🕵️  Detected Adobe InDesign format: Applying layout fixes.")
-                print("   -> Disabled AutoCrop")
-                print("   -> Enabled FullPage Screenshot (to prevent clipping)")
-                print("   -> Added 60px vertical padding")
+            print("🕵️  Detected Adobe InDesign format: Applying layout fixes.")
+            print("   -> Disabled AutoCrop")
+            print("   -> Enabled FullPage Screenshot (to prevent clipping)")
+            print("   -> Added 60px vertical padding")
 
-                # Fix 1: Disable autocrop to keep odd/even pages consistent
-                needs_autocrop = False
+            # Fix 1: Disable autocrop to keep odd/even pages consistent
+            needs_autocrop = False
 
-                # Fix 2: Add padding to bottom to catch page numbers
-                padding_height = 60
+            # Fix 2: Add padding to bottom to catch page numbers
+            padding_height = 60
         # --------------------------------
 
         # Override if manual mode specified
@@ -1442,9 +1446,7 @@ def convert_epub(
 
                         # Fix 3: Disable fullpage if InDesign
                         if capture_with_gowitness(
-                            url, output_path, vp_width, vp_height,
-                            timeout=15, delay=1,
-                            fullpage=not is_indesign
+                            url, output_path, vp_width, vp_height, timeout=15, delay=1, fullpage=not is_indesign
                         ):
                             success_count += 1
                             print(f"   ✅ {html_path.name} (screenshot)")
@@ -1557,9 +1559,13 @@ def convert_epub(
 
                 # Fix 3: Enable fullpage for InDesign too (prevents clipping)
                 success_count = capture_batch_with_gowitness(
-                    urls_with_paths, render_width, render_height,
-                    timeout, delay, threads=threads,
-                    fullpage=True if is_indesign else (epub_type == "screenshot")
+                    urls_with_paths,
+                    render_width,
+                    render_height,
+                    timeout,
+                    delay,
+                    threads=threads,
+                    fullpage=True if is_indesign else (epub_type == "screenshot"),
                 )
 
                 # Check for any missing pages and retry individually
@@ -1569,9 +1575,13 @@ def convert_epub(
                     for url, output_path in missing:
                         # Fix 3: Enable fullpage for InDesign too
                         if capture_with_gowitness(
-                            url, output_path, render_width, render_height,
-                            timeout, delay,
-                            fullpage=True if is_indesign else (epub_type == "screenshot")
+                            url,
+                            output_path,
+                            render_width,
+                            render_height,
+                            timeout,
+                            delay,
+                            fullpage=True if is_indesign else (epub_type == "screenshot"),
                         ):
                             success_count += 1
 
@@ -1607,6 +1617,7 @@ def convert_epub(
 
     print(f"📸 Images saved to: {screenshots_dir}")
     return screenshots_dir, epub_type, success_count, total, needs_autocrop
+
 
 # =============================================================================
 # CLI
@@ -1648,11 +1659,15 @@ Examples:
     parser.add_argument("--cbr-only", action="store_true", help="Create CBR and delete images")
     parser.add_argument("--jpeg-quality", type=int, default=92, help="JPEG quality for CBR (1-100, default: 92)")
     parser.add_argument("--no-jpeg", action="store_true", help="Keep PNG format, don't convert to JPEG")
-    parser.add_argument("--no-autocrop", action="store_true", help="Disable auto-cropping of white borders before JPEG conversion")
+    parser.add_argument(
+        "--autocrop", action="store_true", help="Enable auto-cropping of white borders before JPEG conversion"
+    )
     parser.add_argument(
         "--threads", type=int, default=4, help="Number of parallel threads for screenshot mode (default: 4)"
     )
-    parser.add_argument("--indesign", action="store_true", help="Force InDesign layout mode (disables CSS pixel scaling)")
+    parser.add_argument(
+        "--indesign", action="store_true", help="Force InDesign layout mode (disables CSS pixel scaling)"
+    )
     parser.add_argument("--check-deps", action="store_true", help="Check dependencies")
 
     args = parser.parse_args()
@@ -1734,8 +1749,8 @@ Examples:
 
             cbr_path = output_subdir / f"{input_file.stem}.cbr"
             jpeg_quality = 0 if args.no_jpeg else args.jpeg_quality
-            # If user explicitly requested no_autocrop, override detected autocrop
-            autocrop_flag = False if args.no_autocrop else needs_autocrop
+            # Auto-crop is now opt-in via --autocrop
+            autocrop_flag = args.autocrop
             if create_cbr(screenshots_dir, cbr_path, jpeg_quality, file_type, autocrop=autocrop_flag):
                 # Delete the entire _images directory after creating CBR
                 if args.cbr_only:
