@@ -465,8 +465,6 @@ def analyze_html_page(html_path: Path) -> dict:
             has_letters = bool(re.search(r"[a-zA-ZáéíóúñÁÉÍÓÚÑàèìòùäëïöüâêîôûçœæ]", text_without_numbers))
             result["has_text_content"] = has_letters
 
-        # Also check for text in span elements outside TextContainer (InDesign exports)
-        # These have positioned text using transform/scale CSS
         if not result["has_text_content"]:
             # Look for span elements with id like _idTextSpan
             span_text_match = re.findall(r'<span[^>]+id=["\']_idTextSpan\d*["\'][^>]*>([^<]+)</span>', content)
@@ -475,6 +473,20 @@ def analyze_html_page(html_path: Path) -> dict:
                 text_without_numbers = re.sub(r"\d+", "", all_span_text).strip()
                 has_letters = bool(re.search(r"[a-zA-ZáéíóúñÁÉÍÓÚÑàèìòùäëïöüâêîôûçœæ]", text_without_numbers))
                 result["has_text_content"] = has_letters
+
+        # Fallback: Check for generic text content if specific containers weren't found
+        # This handles standard reflowable EPUBs
+        if not result["has_text_content"]:
+            # Remove scripts, styles, and tags
+            clean_text = re.sub(r"<script[^>]*>.*?</script>", "", content, flags=re.DOTALL)
+            clean_text = re.sub(r"<style[^>]*>.*?</style>", "", clean_text, flags=re.DOTALL)
+            clean_text = re.sub(r"<[^>]+>", " ", clean_text)
+
+            # Count words (simple split)
+            words = clean_text.split()
+            # If page has significant text (>50 words), treat as text content
+            if len(words) > 50:
+                result["has_text_content"] = True
 
         # Check if images are too small (sprites) - they need screenshot mode
         # If average image is much smaller than viewport, it's likely sprites
@@ -498,7 +510,9 @@ def analyze_html_page(html_path: Path) -> dict:
     return result
 
 
-def determine_epub_type(html_files: List[Path], sample_size: int = 5) -> Tuple[str, int, int, float, bool]:
+def determine_epub_type(
+    html_files: List[Path], default_viewport: Tuple[int, int], sample_size: int = 5
+) -> Tuple[str, int, int, float, bool]:
     """
     Analyze sample pages to determine EPUB type.
 
@@ -558,6 +572,12 @@ def determine_epub_type(html_files: List[Path], sample_size: int = 5) -> Tuple[s
         # If image is significantly smaller than viewport (< 95%), enable autocrop
         if max_image_res[0] < max_viewport[0] * 0.95 or max_image_res[1] < max_viewport[1] * 0.95:
             needs_autocrop = True
+
+    # If ANY page has text in HTML, we need screenshot mode
+    # because text won't appear if we just extract images
+    if max_viewport[0] == 0:
+        # If no viewport found (reflowable), use default
+        max_viewport = default_viewport
 
     # If ANY page has text in HTML, we need screenshot mode
     # because text won't appear if we just extract images
@@ -635,9 +655,12 @@ def make_http_handler(directory: Path):
 
     class DirectoryHTTPHandler(http.server.SimpleHTTPRequestHandler):
         # Add MIME type for .xhtml files - Chrome needs text/html to render properly
+        # CRITICAL: Force UTF-8 charset to ensure Spanish/special characters render correctly
         extensions_map = {
             **http.server.SimpleHTTPRequestHandler.extensions_map,
-            ".xhtml": "text/html",
+            ".xhtml": "text/html; charset=utf-8",
+            ".html": "text/html; charset=utf-8",
+            ".htm": "text/html; charset=utf-8",
         }
 
         def __init__(self, *args, **kwargs):
@@ -680,9 +703,10 @@ def scale_css_file(css_path: Path, output_path: Path, scale_factor: float) -> No
         return f"{prop}:{scaled:.2f}px"
 
     content = re.sub(
-        r"(width|height|left|right|top|bottom|min-width|min-height|max-width|max-height):(-?\d+\.?\d*)px",
+        r"(width|height|left|right|top|bottom|min-width|min-height|max-width|max-height)\s*:\s*(-?\d+\.?\d*)px",
         scale_px_value,
         content,
+        flags=re.IGNORECASE,
     )
 
     # Scale translate values in transform
@@ -711,20 +735,45 @@ def prepare_scaled_html(html_path: Path, output_dir: Path, scale_factor: float, 
     2. body dimensions
     3. All absolute pixel values in styles (unless skip_css_scaling=True)
     """
-    if scale_factor <= 1.0:
-        return html_path
-
-    # 1. READ THE FILE FIRST
+    # 2. READ THE FILE FIRST
     content = html_path.read_text(encoding="utf-8", errors="ignore")
 
-    # 2. APPLY INDESIGN FIX (Force visible overflow) - ONLY IF NOT InDesign (which uses skip_css_scaling)
+    # 3. Inject XML declaration for .xhtml if missing
+    if html_path.suffix.lower() == ".xhtml":
+        if "<?xml" not in content[:100]:
+            content = '<?xml version="1.0" encoding="utf-8"?>\n' + content
+
+    # 4. APPLY INDESIGN FIX (Force visible overflow) - ONLY IF NOT InDesign (which uses skip_css_scaling)
     # The user reported "worse than before", likely seeing cutting edges or overlapping pages.
     # InDesign files have precise layout, so overflow:hidden is usually correct.
     if not skip_css_scaling:
         content = content.replace("overflow:hidden", "overflow:visible")
         content = content.replace("overflow: hidden", "overflow: visible")
 
-    # 3. Scale viewport meta tag
+    # 3. Ensure UTF-8 charset meta tag is present (before viewport)
+    # This specifically addresses the Spanish character rendering issue
+    if "charset=" not in content.lower():
+        # Inject <meta charset="utf-8"> if not present
+        if "<head" in content.lower():
+            # Inject right after opening <head> tag
+            content = re.sub(
+                r"(<head[^>]*>)", r"\1\n    <meta charset=\"utf-8\"/>", content, count=1, flags=re.IGNORECASE
+            )
+        else:
+            # If no head, just put it at the very top (not ideal but better than nothing)
+            content = '<meta charset="utf-8"/>\n' + content
+    else:
+        # Update existing charset to utf-8 if it's different
+        content = re.sub(r"(charset\s*=\s*)[\"']?[a-zA-Z0-9-]+[\"']?", r'\1"utf-8"', content, flags=re.IGNORECASE)
+
+    # 4. If scale_factor is 1.0, we can skip the rest of the scaling logic
+    # but we still need to write the file because we potentially injected charset meta tags
+    if scale_factor <= 1.0:
+        output_path = output_dir / html_path.name
+        output_path.write_text(content, encoding="utf-8")
+        return output_path
+
+    # 5. Scale viewport meta tag
     def scale_viewport(match):
         width = int(int(match.group(1)) * scale_factor)
         height = int(int(match.group(2)) * scale_factor)
@@ -1293,10 +1342,19 @@ def convert_epub(
     keep_extracted: bool = False,
     threads: int = 4,
     force_indesign: bool = False,
+    viewport_arg: Optional[str] = None,
 ) -> Tuple[Path, str, int, int, bool]:
     """
     Main conversion function.
     """
+    # Parse viewport argument
+    default_viewport = (1200, 1600)
+    if viewport_arg:
+        try:
+            w, h = map(int, viewport_arg.lower().split("x"))
+            default_viewport = (w, h)
+        except ValueError:
+            print(f"⚠️  Invalid viewport format '{viewport_arg}', using default 1200x1600")
     epub_path = Path(epub_path).resolve()
 
     if not epub_path.exists():
@@ -1323,7 +1381,7 @@ def convert_epub(
             raise ValueError("No HTML files found in EPUB")
 
         # Determine EPUB type
-        epub_type, vp_width, vp_height, scale_factor, needs_autocrop = determine_epub_type(html_files)
+        epub_type, vp_width, vp_height, scale_factor, needs_autocrop = determine_epub_type(html_files, default_viewport)
 
         # --- SMART INDESIGN DETECTION ---
         is_indesign = force_indesign
@@ -1489,21 +1547,41 @@ def convert_epub(
                 scaled_dir.mkdir(parents=True, exist_ok=True)
 
                 # Copy and scale CSS resource directories from content_root
-                for resource_dir in ["css", "styles", "fonts", "Fonts", "CSS", "Styles"]:
+                # Expanded list: added singular 'font' and 'image'
+                for resource_dir in [
+                    "css",
+                    "styles",
+                    "font",
+                    "fonts",
+                    "Fonts",
+                    "CSS",
+                    "Styles",
+                    "image",
+                    "images",
+                    "Images",
+                ]:
                     src = content_root / resource_dir
                     if src.exists():
                         dst = scaled_dir / resource_dir
                         dst.mkdir(parents=True, exist_ok=True)
                         for item in src.iterdir():
                             if item.is_file():
-                                if item.suffix.lower() == ".css" and not is_indesign:
-                                    # Scale CSS files (only if not InDesign, which has pixel-perfect layout)
+                                if item.suffix.lower() == ".css":
+                                    # Scale CSS files (needed for InDesign layout positioning)
                                     scale_css_file(item, dst / item.name, scale_factor)
                                 else:
-                                    # Copy other files (fonts, etc.) - or CSS if InDesign
+                                    # Copy other files (fonts, etc.)
                                     shutil.copy(item, dst / item.name)
                             elif item.is_dir():
                                 shutil.copytree(item, dst / item.name, dirs_exist_ok=True)
+
+                # NEW: Also copy and scale CSS files in the same directory as HTML files
+                # This handles flat EPUB structures where CSS is not in a subfolder
+                for item in html_parent.iterdir():
+                    if item.is_file() and item.suffix.lower() == ".css":
+                        dst_path = scaled_dir / html_subdir / item.name
+                        if not dst_path.exists():
+                            scale_css_file(item, dst_path, scale_factor)
 
                 # Link images directory (don't copy, too large)
                 for img_dir in ["images", "Images", "image", "img"]:
@@ -1668,6 +1746,9 @@ Examples:
     parser.add_argument(
         "--indesign", action="store_true", help="Force InDesign layout mode (disables CSS pixel scaling)"
     )
+    parser.add_argument(
+        "--viewport", type=str, default="1200x1600", help="Viewport size for screenshot mode (default: 1200x1600)"
+    )
     parser.add_argument("--check-deps", action="store_true", help="Check dependencies")
 
     args = parser.parse_args()
@@ -1724,6 +1805,7 @@ Examples:
                 keep_extracted=args.keep_extracted,
                 threads=args.threads,
                 force_indesign=args.indesign,
+                viewport_arg=args.viewport,
             )
         else:
             print(f"❌ Error: Unsupported file format: {file_ext}")
